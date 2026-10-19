@@ -3,12 +3,11 @@ import { useNavigate } from "react-router-dom";
 import { Laptop, RefreshCw, ShieldAlert, Users } from "lucide-react";
 import { api } from "../../lib/api.js";
 import {
-  errorMessage, getName, initials, normalizeRole, prettyDate, safeArray, statusClass, validPassword, ROLE_LABEL,
+  COLUMNS, errorMessage, getName, initials, normalizeRole, prettyDate, safeArray, statusClass, validPassword, ROLE_LABEL,
 } from "../../lib/identity.js";
 import {
   DataTable, EmptyState, LoadingRows, Modal, Notice, PageHeading, Panel,
 } from "../../components/Shared.jsx";
-import { COLUMNS } from "../../lib/identity.js";
 
 export function DepartmentPage({ user }) {
   const [department, setDepartment] = useState(null);

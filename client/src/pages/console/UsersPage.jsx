@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import { Check, LogOut, Pencil, Plus, RefreshCw, Search, UserCog, X } from "lucide-react";
 import { api } from "../../lib/api.js";
 import {
-  errorMessage, normalizeStatus, safeArray, validPassword,
+  COLUMNS, errorMessage, normalizeStatus, safeArray, validPassword,
 } from "../../lib/identity.js";
 import {
-  DataTable, LoadingRows, Modal, Notice, PageHeading, Panel, useRemote,
+  DataTable, LoadingRows, Modal, Notice, PageHeading, Panel,
 } from "../../components/Shared.jsx";
-import { COLUMNS } from "../../lib/identity.js";
+import useRemote from "../../hooks/useRemote.js";
 
 export default function UsersPage({ role }) {
   const [query, setQuery] = useState("");

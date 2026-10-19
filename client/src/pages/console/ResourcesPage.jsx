@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, Pencil, Plus, RefreshCw } from "lucide-react";
 import { api } from "../../lib/api.js";
-import { errorMessage, safeArray } from "../../lib/identity.js";
+import { COLUMNS, errorMessage, safeArray } from "../../lib/identity.js";
 import {
-  DataTable, Modal, Notice, PageHeading, Panel, useRemote,
+  DataTable, LoadingRows, Modal, Notice, PageHeading, Panel,
 } from "../../components/Shared.jsx";
-import { COLUMNS } from "../../lib/identity.js";
+import useRemote from "../../hooks/useRemote.js";
 
 export default function ResourcesPage({ role }) {
   const [query, setQuery] = useState("");
@@ -42,7 +42,7 @@ export default function ResourcesPage({ role }) {
   };
   return <main className="content"><PageHeading kicker="Least privilege" title="Protected resources." description="Resource availability and content access are determined by the identity service." action={role === "admin" ? <button className="btn btn-primary" onClick={() => { setEditing(null); setForm({ name: "", description: "", classification: "INTERNAL", allowedRoles: "EMPLOYEE", departmentId: "", active: true, content: "" }); setModal(true); }}><Plus size={15} /> Add resource</button> : null} />
     <Notice type="error">{error}</Notice><div className="toolbar"><input className="field search-field" placeholder="Search protected resources" value={query} onChange={(e) => setQuery(e.target.value)} /><button className="btn btn-outline" onClick={refresh} disabled={loading}><RefreshCw size={14} /> Refresh</button></div>
-    <Panel title={`${filtered.length} protected resources`} note="A visible listing does not guarantee content access">{loading ? <div style={{ padding: 20 }}><div className="content-loader"><div className="skeleton" style={{ height: 45 }} /><div className="skeleton" style={{ height: 58 }} /><div className="skeleton" style={{ height: 58 }} /><div className="skeleton" style={{ height: 58 }} /></div></div> : <DataTable rows={filtered} columns={COLUMNS.resources} empty="No resources are available" renderActions={(resource) => <>{role === "admin" && <button className="icon-button" title="Edit resource" aria-label={`Edit ${resource.name}`} onClick={() => openEdit(resource)}><Pencil size={14} /></button>}<button className="icon-button" title="Request resource access" aria-label={`Access ${resource.name}`} onClick={() => getAccess(resource)}><ArrowRight size={14} /></button></>} />}</Panel>
+    <Panel title={`${filtered.length} protected resources`} note="A visible listing does not guarantee content access">{loading ? <div style={{ padding: 20 }}><LoadingRows /></div> : <DataTable rows={filtered} columns={COLUMNS.resources} empty="No resources are available" renderActions={(resource) => <>{role === "admin" && <button className="icon-button" title="Edit resource" aria-label={`Edit ${resource.name}`} onClick={() => openEdit(resource)}><Pencil size={14} /></button>}<button className="icon-button" title="Request resource access" aria-label={`Access ${resource.name}`} onClick={() => getAccess(resource)}><ArrowRight size={14} /></button></>} />}</Panel>
     {role === "employee" && <div className="notice info" style={{ marginTop: 14 }}>Resource access is checked by the server for your verified identity and role. A listed resource may still be restricted.</div>}
     {modal && <Modal title={editing ? "Edit protected resource" : "Add protected resource"} description="Save resource metadata through the service." onClose={() => { setModal(false); setEditing(null); }}><form onSubmit={saveResource}><div className="form-grid">
       <div className="form-field"><label>Name</label><input className="field" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>

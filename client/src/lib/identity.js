@@ -1,6 +1,6 @@
 import {
   Building2, ClipboardList, Database, FileKey2, History, Laptop, LayoutDashboard,
-  MonitorCog, Settings, Shield, ShieldCheck, UserRound, Users,
+  MonitorCog, Settings, ShieldCheck, UserRound, Users,
 } from "lucide-react";
 
 export const ROLE_HOME = {

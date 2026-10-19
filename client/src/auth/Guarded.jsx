@@ -1,10 +1,11 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { api } from "../lib/api.js";
 import {
   errorMessage, normalizeRole, ROLE_HOME,
 } from "../lib/identity.js";
-import { LoadingRows, Notice, PageLoading } from "../components/Shared.jsx";
+import { LoadingRows, Notice } from "../components/Shared.jsx";
+import LazyBoundary from "../components/LazyBoundary.jsx";
 import AppLayout from "../components/AppLayout.jsx";
 import ForcePasswordPage from "../components/ForcePasswordPage.jsx";
 
@@ -63,7 +64,7 @@ export default function Guarded({ role, onUser }) {
   };
 
   return <AppLayout user={state.user} role={role} onLogout={logout}>
-    <Suspense fallback={<PageLoading />}>
+    <LazyBoundary>
       <Routes>
         <Route index element={<DashboardPage role={role} />} />
         <Route path="dashboard" element={<DashboardPage role={role} />} />
@@ -81,6 +82,6 @@ export default function Guarded({ role, onUser }) {
         <Route path="profile" element={<ProfilePage user={state.user} onUser={updateProfile} />} />
         <Route path="*" element={<Navigate to={ROLE_HOME[role]} replace />} />
       </Routes>
-    </Suspense>
+    </LazyBoundary>
   </AppLayout>;
 }

@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Building2, Eye, FileKey2, LogOut, RefreshCw, Users, X } from "lucide-react";
+import { Building2, Eye, FileKey2, LogOut, RefreshCw, X } from "lucide-react";
 import { api } from "../../lib/api.js";
 import {
-  errorMessage, normalizeStatus, safeArray,
+  COLUMNS, errorMessage, normalizeStatus, safeArray,
 } from "../../lib/identity.js";
 import {
-  DataTable, EmptyState, LoadingRows, Modal, Notice, PageHeading, Panel, useRemote,
+  DataTable, EmptyState, LoadingRows, Modal, Notice, PageHeading, Panel,
 } from "../../components/Shared.jsx";
-import { COLUMNS } from "../../lib/identity.js";
+import useRemote from "../../hooks/useRemote.js";
 
 export function RolesPage() {
   const [roles, setRoles] = useState([]);

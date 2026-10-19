@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Shield, ShieldCheck, X } from "lucide-react";
 import {
-  prettyDate, ROLE_LABEL, safeArray, statusClass,
+  prettyDate, ROLE_LABEL, statusClass,
 } from "../lib/identity.js";
 
 export function Brand({ light = false }) {
@@ -48,27 +47,6 @@ export function DataTable({ rows, columns, empty, renderActions }) {
     {columns.map(([key]) => <td key={key}>{key === "status" || key === "active" ? <span className={`status ${statusClass(key === "active" ? row[key] ? "active" : "inactive" : row[key])}`}>{key === "active" ? row[key] ? "Active" : "Inactive" : row[key] || "Unknown"}</span> : key === "mfaEnabled" ? <span className={`status ${row[key] ? "active" : "pending"}`}>{row[key] ? "Enabled" : "Not set"}</span> : key.toLowerCase().includes("activity") || key === "createdAt" ? <span className="mono">{prettyDate(row[key])}</span> : Array.isArray(row[key]) ? <span>{row[key].join(", ") || "—"}</span> : <span>{row[key] ?? "—"}</span>}</td>)}
     {renderActions && <td><div className="table-actions">{renderActions(row)}</div></td>}
   </tr>)}</tbody></table></div>;
-}
-
-export function useRemote(load, deps = []) {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      setRows(safeArray(await load()));
-    } catch (error) {
-      setError(error?.response?.data?.error || error?.response?.data?.message || error?.message || "The requested records could not be loaded.");
-    } finally {
-      setLoading(false);
-    }
-  // The loader is provided together with the explicit dependencies by each page.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-  useEffect(() => { refresh(); }, [refresh]);
-  return { rows, setRows, loading, error, refresh, setError };
 }
 
 export function Modal({ title, description, onClose, children }) {

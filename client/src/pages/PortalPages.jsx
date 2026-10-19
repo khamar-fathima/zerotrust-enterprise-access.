@@ -21,7 +21,7 @@ export function PortalHome() {
     <main>
       <section className="portal-hero">
         <div><div className="portal-kicker"><span className="kicker-line" /> COLLEGE CYBERSECURITY DEMONSTRATION</div>
-          <h1 className="portal-title">Trust is not<br /><em>a checkbox.</em></h1>
+          <h1 className="portal-title">Trust is not<br />a <em>checkbox.</em></h1>
           <p className="portal-lead">Never Trust. Always Verify. Every sign-in is a decision. Every permission has a boundary. Explore a working identity console built around verification, device posture and least privilege.</p>
           <div style={{ display: "flex", gap: 10, marginTop: 25, flexWrap: "wrap" }}>
             <a className="btn btn-primary" href="#portals">Choose your portal <ArrowRight size={15} /></a>

@@ -23,9 +23,10 @@ If MongoDB is not configured or cannot connect, the public UI can still render, 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Express with watch mode and Vite on port 5000 |
-| `npm run build` | Build the React frontend to `dist/client` |
+| `npm run build` | Build the React frontend and enforce bundle budgets |
 | `npm start` | Serve the built frontend and API in production mode |
-| `npm test` | Utility tests and MongoDB-backed acceptance tests |
+| `npm test` | Frontend render, cryptographic utility, and MongoDB security tests |
+| `npm run check:bundle` | Check startup/chunk size budgets after a production build |
 
 Dependencies are managed in the root `package.json`. Source stays in `client/` and `server/`.
 
@@ -90,6 +91,10 @@ Administrative writes are administrator-only. Users can revoke their own session
 `npm test` always runs the cryptographic utility tests. If `MONGODB_URI` is configured, the integration suite connects to a **uniquely named test-owned database**, creates temporary fixtures, runs the ten required security scenarios plus CSRF validation, and removes only that test database afterward. The database user needs permission to create/drop that separate test database. Without `MONGODB_URI`, the integration suite reports itself as skipped—this is not proof of end-to-end behavior.
 
 Never point this educational project at a production identity database. Use a dedicated Atlas project/database and non-sensitive demonstration accounts.
+
+The frontend render smoke tests load each extracted page module without running effects or bypassing authentication. They catch broken component imports and initial rendering regressions; they do not replace interactive browser verification of sign-in or MFA. Protected routes still verify the session and role before rendering their lazy-loaded page.
+
+Every `npm run build` automatically runs `check:bundle` and fails if a budget is exceeded or dashboard/management modules enter the initial static import graph. The budgets are 400 KB raw / 150 KB gzip for initial JavaScript and 500 KB raw per chunk. `npm run check:bundle` can also recheck an existing build independently.
 
 ## Production limitations
 
