@@ -343,6 +343,196 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       });
     });
 
+    await t.test("department transfers immediately update active manager and employee scopes", async (t) => {
+      const [formerDepartment, newDepartment] = await Promise.all([
+        Department.create({ name: "Transfer source department" }),
+        Department.create({ name: "Transfer destination department" }),
+      ]);
+      const [transferredManager, sourceManager, destinationManager, transferredEmployee, sourceEmployee, destinationEmployee] = await Promise.all([
+        makeUser("MANAGER", { departmentId: formerDepartment._id, name: "Transferred manager" }),
+        makeUser("MANAGER", { departmentId: formerDepartment._id, name: "Source manager" }),
+        makeUser("MANAGER", { departmentId: newDepartment._id, name: "Destination manager" }),
+        makeUser("EMPLOYEE", { departmentId: formerDepartment._id, name: "Transferred employee" }),
+        makeUser("EMPLOYEE", { departmentId: formerDepartment._id, name: "Remaining source employee" }),
+        makeUser("EMPLOYEE", { departmentId: newDepartment._id, name: "Destination employee" }),
+      ]);
+      const [transferredManagerClient, sourceManagerClient, destinationManagerClient, transferredEmployeeClient] = await Promise.all([
+        knownClient(transferredManager),
+        knownClient(sourceManager),
+        knownClient(destinationManager),
+        knownClient(transferredEmployee),
+      ]);
+      for (const [sessionClient, user] of [
+        [transferredManagerClient, transferredManager],
+        [sourceManagerClient, sourceManager],
+        [destinationManagerClient, destinationManager],
+        [transferredEmployeeClient, transferredEmployee],
+      ]) {
+        const login = await signIn(sessionClient, user);
+        assert.equal(login.status, 200);
+        assert.equal(login.body.authenticated, true);
+      }
+
+      const [sourceManagerResource, destinationManagerResource, sharedManagerResource,
+        sourceEmployeeResource, destinationEmployeeResource, sharedEmployeeResource] = await Promise.all([
+        Resource.create({ name: "Transfer source manager guide", content: "Source manager-only content", departmentId: formerDepartment._id, allowedRoles: ["MANAGER"] }),
+        Resource.create({ name: "Transfer destination manager guide", content: "Destination manager-only content", departmentId: newDepartment._id, allowedRoles: ["MANAGER"] }),
+        Resource.create({ name: "Transfer shared manager guide", content: "Shared manager-only content", departmentId: null, allowedRoles: ["MANAGER"] }),
+        Resource.create({ name: "Transfer source employee guide", content: "Source employee-only content", departmentId: formerDepartment._id, allowedRoles: ["EMPLOYEE"] }),
+        Resource.create({ name: "Transfer destination employee guide", content: "Destination employee-only content", departmentId: newDepartment._id, allowedRoles: ["EMPLOYEE"] }),
+        Resource.create({ name: "Transfer shared employee guide", content: "Shared employee-only content", departmentId: null, allowedRoles: ["EMPLOYEE"] }),
+      ]);
+      const ids = (rows) => rows.map((row) => String(row.id || row._id)).sort();
+      const sharedManagerResources = await Resource.find({
+        departmentId: null, active: true, allowedRoles: "MANAGER",
+      }).select("_id").lean();
+      const sharedEmployeeResources = await Resource.find({
+        departmentId: null, active: true, allowedRoles: "EMPLOYEE",
+      }).select("_id").lean();
+      const assertManagerSummary = async (sessionClient, expectedDepartment, employees) => {
+        const summary = await sessionClient.request("GET", "/dashboard/summary");
+        assert.equal(summary.status, 200);
+        assert.equal(summary.body.departmentName, expectedDepartment.name);
+        assert.deepEqual(summary.body.metrics, {
+          employees, resources: sharedManagerResources.length + 1, activeSessions: 1,
+        });
+      };
+      const assertEmployeeResources = async (sessionClient, expectedResources, deniedResources) => {
+        const list = await sessionClient.request("GET", "/resources");
+        assert.equal(list.status, 200);
+        assert.deepEqual(ids(list.body.resources), ids(expectedResources));
+        for (const resource of deniedResources) {
+          assert.equal((await sessionClient.request("GET", `/resources/${resource._id}/content`)).status, 403);
+        }
+        for (const resource of expectedResources) {
+          const content = await sessionClient.request("GET", `/resources/${resource._id}/content`);
+          assert.equal(content.status, 200);
+          assert.equal(content.body.resource.content, resource.content);
+        }
+      };
+      const [formerDepartmentActivity, newDepartmentActivity] = await AuditLog.create([
+        {
+          userId: sourceEmployee._id, userName: sourceEmployee.name, role: "EMPLOYEE",
+          eventType: "TEST_TRANSFER_ACTIVITY", description: "Activity in the transfer source department",
+          createdAt: new Date(Date.now() + 60_000),
+        },
+        {
+          userId: destinationEmployee._id, userName: destinationEmployee.name, role: "EMPLOYEE",
+          eventType: "TEST_TRANSFER_ACTIVITY", description: "Activity in the transfer destination department",
+          createdAt: new Date(Date.now() + 60_000),
+        },
+      ]);
+      const transferredManagerSession = await Session.findOne({ userId: transferredManager._id, status: "ACTIVE" });
+      const transferredEmployeeSession = await Session.findOne({ userId: transferredEmployee._id, status: "ACTIVE" });
+      assert.ok(transferredManagerSession);
+      assert.ok(transferredEmployeeSession);
+
+      await t.test("manager transfer moves active session scope and dashboard totals", async () => {
+        const before = await transferredManagerClient.request("GET", "/users");
+        assert.equal(before.status, 200);
+        assert.deepEqual(ids(before.body.users), ids([transferredEmployee, sourceEmployee]));
+        await assertManagerSummary(transferredManagerClient, formerDepartment, 2);
+
+        const update = await adminClient.request("PATCH", `/users/${transferredManager._id}`, {
+          departmentId: String(newDepartment._id),
+        });
+        assert.equal(update.status, 200);
+        assert.equal(String(update.body.user.departmentId), String(newDepartment._id));
+        assert.equal((await Session.findById(transferredManagerSession._id)).status, "ACTIVE");
+
+        const identity = await transferredManagerClient.request("GET", "/auth/me");
+        assert.equal(identity.status, 200);
+        assert.equal(identity.body.user.departmentName, newDepartment.name);
+        const employees = await transferredManagerClient.request("GET", "/users");
+        assert.equal(employees.status, 200);
+        assert.deepEqual(ids(employees.body.users), ids([destinationEmployee]));
+        assert.equal((await sourceManagerClient.request("GET", `/users/${transferredManager._id}`)).status, 403);
+        assert.deepEqual(ids((await sourceManagerClient.request("GET", "/departments")).body.departments), [String(formerDepartment._id)]);
+        assert.deepEqual(ids((await transferredManagerClient.request("GET", "/departments")).body.departments), [String(newDepartment._id)]);
+        const movedManagerSummary = await transferredManagerClient.request("GET", "/dashboard/summary");
+        assert.equal(movedManagerSummary.status, 200);
+        assert.equal(movedManagerSummary.body.departmentName, newDepartment.name);
+        assert.deepEqual(movedManagerSummary.body.metrics, {
+          employees: 1, resources: sharedManagerResources.length + 1, activeSessions: 1,
+        });
+        assert.ok(movedManagerSummary.body.recentActivity.some((event) => String(event.id) === String(newDepartmentActivity._id)));
+        assert.equal(movedManagerSummary.body.recentActivity.some((event) => String(event.id) === String(formerDepartmentActivity._id)), false);
+        const sourceManagerSummary = await sourceManagerClient.request("GET", "/dashboard/summary");
+        assert.equal(sourceManagerSummary.body.departmentName, formerDepartment.name);
+        assert.deepEqual(sourceManagerSummary.body.metrics, {
+          employees: 2, resources: sharedManagerResources.length + 1, activeSessions: 1,
+        });
+        assert.ok(sourceManagerSummary.body.recentActivity.some((event) => String(event.id) === String(formerDepartmentActivity._id)));
+        assert.equal(sourceManagerSummary.body.recentActivity.some((event) => String(event.id) === String(newDepartmentActivity._id)), false);
+
+        const resources = await transferredManagerClient.request("GET", "/resources");
+        assert.equal(resources.status, 200);
+        assert.deepEqual(ids(resources.body.resources), ids([
+          destinationManagerResource, ...sharedManagerResources,
+        ]));
+        assert.equal((await transferredManagerClient.request("GET", `/resources/${sourceManagerResource._id}/content`)).status, 403);
+        assert.equal((await transferredManagerClient.request("GET", `/resources/${destinationEmployeeResource._id}/content`)).status, 403);
+        assert.equal((await transferredManagerClient.request("GET", `/resources/${sharedEmployeeResource._id}/content`)).status, 403);
+        for (const resource of [destinationManagerResource, sharedManagerResource]) {
+          assert.equal((await transferredManagerClient.request("GET", `/resources/${resource._id}/content`)).status, 200);
+        }
+      });
+
+      await t.test("employee transfer updates live identity, resource access, manager listings, and aggregates", async () => {
+        const update = await adminClient.request("PATCH", `/users/${transferredEmployee._id}`, {
+          departmentId: String(newDepartment._id),
+        });
+        assert.equal(update.status, 200);
+        assert.equal(String(update.body.user.departmentId), String(newDepartment._id));
+        assert.equal((await Session.findById(transferredEmployeeSession._id)).status, "ACTIVE");
+
+        const identity = await transferredEmployeeClient.request("GET", "/auth/me");
+        assert.equal(identity.status, 200);
+        assert.equal(identity.body.user.departmentName, newDepartment.name);
+        assert.deepEqual(ids((await transferredEmployeeClient.request("GET", "/departments")).body.departments), [String(newDepartment._id)]);
+        await assertEmployeeResources(transferredEmployeeClient,
+          [destinationEmployeeResource, ...sharedEmployeeResources],
+          [sourceEmployeeResource, sharedManagerResource]);
+        const summary = await transferredEmployeeClient.request("GET", "/dashboard/summary");
+        assert.equal(summary.status, 200);
+        assert.deepEqual(summary.body.metrics, {
+          resources: sharedEmployeeResources.length + 1, activeSessions: 1,
+        });
+
+        for (const managerClient of [transferredManagerClient, destinationManagerClient]) {
+          const listing = await managerClient.request("GET", "/users");
+          assert.equal(listing.status, 200);
+          assert.ok(ids(listing.body.users).includes(String(transferredEmployee._id)));
+        }
+        const sourceListing = await sourceManagerClient.request("GET", "/users");
+        assert.equal(sourceListing.status, 200);
+        assert.deepEqual(ids(sourceListing.body.users), ids([sourceEmployee]));
+        assert.equal((await sourceManagerClient.request("GET", `/users/${transferredEmployee._id}`)).status, 403);
+        assert.equal((await transferredManagerClient.request("GET", `/users/${transferredEmployee._id}`)).status, 200);
+        await assertManagerSummary(sourceManagerClient, formerDepartment, 1);
+        await assertManagerSummary(transferredManagerClient, newDepartment, 2);
+        await assertManagerSummary(destinationManagerClient, newDepartment, 2);
+      });
+
+      await t.test("both administrator department changes are recorded in the audit trail", async () => {
+        for (const target of [transferredManager, transferredEmployee]) {
+          const event = await AuditLog.findOne({
+            eventType: "USER_UPDATED",
+            userId: admin._id,
+            "metadata.targetUserId": String(target._id),
+          }).sort({ createdAt: -1, _id: -1 }).lean();
+          assert.ok(event, `department update for ${target.role.toLowerCase()} must be audited`);
+          assert.equal(event.role, "ADMIN");
+          assert.equal(event.status, "SUCCESS");
+          const auditApi = await adminClient.request("GET", `/audit-logs?eventType=USER_UPDATED&userId=${admin._id}`);
+          assert.equal(auditApi.status, 200);
+          assert.ok(auditApi.body.logs.some((row) =>
+            String(row.userId) === String(admin._id) &&
+            row.metadata.targetUserId === String(target._id)));
+        }
+      });
+    });
+
     await t.test("identity pages and filtered totals always intersect the manager's scope", async () => {
       const otherDepartment = await Department.create({ name: "Pagination other department" });
       const fixtures = await User.insertMany(Array.from({ length: 265 }, (_, index) => ({
