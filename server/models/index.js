@@ -20,6 +20,8 @@ const userSchema = new Schema({
   rejectedReason: { type: String, default: "" },
 }, timestamps);
 userSchema.index({ departmentId: 1, role: 1, status: 1 });
+userSchema.index({ createdAt: -1, _id: -1 });
+userSchema.index({ departmentId: 1, role: 1, status: 1, name: 1, _id: 1 });
 
 const roleSchema = new Schema({
   key: { type: String, required: true, unique: true },
@@ -80,6 +82,7 @@ const auditLogSchema = new Schema({
   metadata: { type: Schema.Types.Mixed, default: {} },
 }, { ...timestamps, versionKey: false });
 auditLogSchema.index({ createdAt: -1, eventType: 1 });
+auditLogSchema.index({ createdAt: -1, _id: -1 });
 
 const resourceSchema = new Schema({
   name: { type: String, required: true, trim: true, maxlength: 120 },

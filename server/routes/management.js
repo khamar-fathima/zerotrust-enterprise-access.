@@ -5,6 +5,7 @@ import { Department, Device, AuditLog, Role, Session, User } from "../models/ind
 import { writeAudit } from "../lib/audit.js";
 import { cookieOptions, hashToken, requestContext } from "../lib/security.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { auditQuery, literalSearch, pageMetadata, paginate, usersQuery } from "../lib/pagination.js";
 
 const router = Router();
 const safeUser = (user) => ({
@@ -26,28 +27,38 @@ function cleanText(value, max = 120) {
 
 router.get("/users", requireAuth, async (req, res, next) => {
   try {
-    if (req.user.role === "ADMIN") {
-      const filters = {};
-      if (req.query.status && ["PENDING", "ACTIVE", "DISABLED", "REJECTED"].includes(req.query.status)) filters.status = req.query.status;
-      if (req.query.role && ["ADMIN", "MANAGER", "EMPLOYEE"].includes(req.query.role)) filters.role = req.query.role;
-      if (req.query.departmentId) filters.departmentId = req.query.departmentId;
-      if (req.query.q) {
-        const q = String(req.query.q).slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        filters.$or = [{ name: { $regex: q, $options: "i" } }, { email: { $regex: q, $options: "i" } }];
-      }
-      const users = await User.find(filters).populate("departmentId", "name").sort({ createdAt: -1 }).limit(250);
-      return res.json({ users: users.map(safeUser), total: users.length });
+    if (!["ADMIN", "MANAGER"].includes(req.user.role)) {
+      return res.status(403).json({ error: "You cannot view other users.", code: "FORBIDDEN" });
     }
-    if (req.user.role === "MANAGER") {
-      if (!req.user.departmentId) return res.json({ users: [], total: 0 });
-      const users = await User.find({
-        departmentId: req.user.departmentId?._id || req.user.departmentId,
-        role: "EMPLOYEE",
-        status: "ACTIVE",
-      }).populate("departmentId", "name").sort({ name: 1 }).limit(200);
-      return res.json({ users: users.map(safeUser), total: users.length });
+    const input = usersQuery.parse(req.query);
+    const isManager = req.user.role === "MANAGER";
+    const departmentId = req.user.departmentId?._id || req.user.departmentId;
+    if (isManager && !departmentId) {
+      return res.json({ users: [], total: 0, page: 1, limit: input.limit, totalPages: 0 });
     }
-    return res.status(403).json({ error: "You cannot view other users.", code: "FORBIDDEN" });
+    const filters = {};
+    if (input.status) filters.status = input.status;
+    if (input.role) filters.role = input.role;
+    if (input.departmentId) filters.departmentId = input.departmentId;
+    if (input.q) {
+      const search = literalSearch(input.q);
+      const departments = await Department.find({
+        name: search, ...(isManager ? { _id: departmentId } : {}),
+      }).select("_id").lean();
+      filters.$or = ["name", "email", "role", "status"].map((field) => ({ [field]: search }));
+      filters.$or.push({ departmentId: { $in: departments.map((item) => item._id) } });
+    }
+    // Client filters may narrow this scope, never overwrite it.
+    const scopedFilters = isManager ? { $and: [
+      { departmentId, role: "EMPLOYEE", status: "ACTIVE" }, filters,
+    ] } : filters;
+    const pagination = await paginate(User, scopedFilters, input);
+    const users = await User.find(scopedFilters)
+      .select("name email role status departmentId mfaEnabled createdAt lastLoginAt")
+      .populate("departmentId", "name")
+      .sort(isManager ? { name: 1, _id: 1 } : { createdAt: -1, _id: -1 })
+      .skip(pagination.skip).limit(pagination.limit).lean();
+    return res.json({ users: users.map(safeUser), ...pageMetadata(pagination) });
   } catch (error) { next(error); }
 });
 
@@ -303,22 +314,24 @@ router.post("/sessions/revoke-all", requireAuth, async (req, res, next) => {
 
 router.get("/audit-logs", requireAuth, requireRole("ADMIN"), async (req, res, next) => {
   try {
+    const input = auditQuery.parse(req.query);
     const filters = {};
-    if (req.query.status && ["SUCCESS", "WARNING", "CRITICAL"].includes(req.query.status)) filters.status = req.query.status;
-    if (req.query.eventType) filters.eventType = cleanText(req.query.eventType, 80);
-    if (req.query.userId) filters.userId = req.query.userId;
-    if (req.query.from || req.query.to) {
+    if (input.status) filters.status = input.status;
+    if (input.eventType) filters.eventType = input.eventType;
+    if (input.userId) filters.userId = input.userId;
+    if (input.from || input.to) {
       filters.createdAt = {};
-      if (req.query.from && !Number.isNaN(Date.parse(req.query.from))) filters.createdAt.$gte = new Date(req.query.from);
-      if (req.query.to && !Number.isNaN(Date.parse(req.query.to))) filters.createdAt.$lte = new Date(req.query.to);
+      if (input.from) filters.createdAt.$gte = new Date(input.from);
+      if (input.to) filters.createdAt.$lte = new Date(input.to);
     }
-    if (req.query.q) {
-      const q = String(req.query.q).slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      filters.$or = [{ description: { $regex: q, $options: "i" } }, { eventType: { $regex: q, $options: "i" } }, { userName: { $regex: q, $options: "i" } }];
+    if (input.q) {
+      const search = literalSearch(input.q);
+      filters.$or = ["description", "eventType", "userName", "ipAddress", "status"].map((field) => ({ [field]: search }));
     }
-    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 250);
-    const logs = await AuditLog.find(filters).sort({ createdAt: -1 }).limit(limit).lean();
-    res.json({ logs: logs.map((log) => ({ ...log, id: log._id })), total: logs.length });
+    const pagination = await paginate(AuditLog, filters, input);
+    const logs = await AuditLog.find(filters).sort({ createdAt: -1, _id: -1 })
+      .skip(pagination.skip).limit(pagination.limit).lean();
+    res.json({ logs: logs.map((log) => ({ ...log, id: log._id })), ...pageMetadata(pagination) });
   } catch (error) { next(error); }
 });
 

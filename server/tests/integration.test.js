@@ -343,6 +343,128 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       });
     });
 
+    await t.test("identity pages and filtered totals always intersect the manager's scope", async () => {
+      const otherDepartment = await Department.create({ name: "Pagination other department" });
+      const fixtures = await User.insertMany(Array.from({ length: 265 }, (_, index) => ({
+        name: `Paging [literal] ${String(index).padStart(3, "0")}`,
+        email: `paging-${index}@example.test`,
+        role: index === 0 ? "MANAGER" : "EMPLOYEE",
+        status: index === 1 ? "DISABLED" : "ACTIVE",
+        departmentId: index < 5 ? otherDepartment._id : department._id,
+        passwordHash: "unused-fixture-hash",
+      })));
+      const adminPage = await adminClient.request("GET", "/users?q=Paging&limit=100&page=3");
+      assert.equal(adminPage.status, 200);
+      assert.equal(adminPage.body.total, 265);
+      assert.equal(adminPage.body.totalPages, 3);
+      assert.equal(adminPage.body.users.length, 65);
+      const allAdminIds = [];
+      const allManagerIds = [];
+      for (let page = 1; page <= 3; page++) {
+        const adminRows = await adminClient.request("GET", `/users?q=Paging&limit=100&page=${page}`);
+        allAdminIds.push(...adminRows.body.users.map((row) => row.id));
+        const response = await managerClient.request("GET", `/users?q=Paging&limit=100&page=${page}`);
+        assert.equal(response.status, 200);
+        assert.equal(response.body.total, 260);
+        assert.equal(response.body.totalPages, 3);
+        for (const row of response.body.users) {
+          assert.equal(row.departmentId, String(department._id));
+          assert.equal(row.role, "EMPLOYEE");
+          assert.equal(row.status, "ACTIVE");
+          assert.equal(row.passwordHash, undefined);
+          assert.equal(row.mfaSecretEncrypted, undefined);
+        }
+        allManagerIds.push(...response.body.users.map((row) => row.id));
+      }
+      assert.equal(new Set(allAdminIds).size, 265, "stable sort must not repeat or omit tied records");
+      assert.equal(new Set(allManagerIds).size, 260);
+      for (const query of [
+        `departmentId=${otherDepartment._id}`, "role=ADMIN", "role=MANAGER",
+        "status=DISABLED", "status=PENDING", "q=Pagination%20other%20department",
+        `departmentId=${otherDepartment._id}&q=Paging&page=99`,
+      ]) {
+        const response = await managerClient.request("GET", `/users?limit=10&${query}`);
+        assert.equal(response.status, 200);
+        assert.deepEqual(response.body.users, []);
+        assert.equal(response.body.total, 0);
+        assert.equal(response.body.page, 1);
+        assert.equal(response.body.totalPages, 0);
+      }
+      const last = await managerClient.request("GET", "/users?q=Paging&page=999&limit=100");
+      assert.equal(last.body.page, 3);
+      assert.equal(last.body.users.length, 60);
+      const literal = await managerClient.request("GET", "/users?q=%5Bliteral%5D&limit=10");
+      assert.equal(literal.body.total, 260);
+      const departmentSearch = await managerClient.request("GET", "/users?q=Test%20engineering&limit=10");
+      assert.equal(departmentSearch.body.total, 261);
+      assert.ok(departmentSearch.body.users.every((row) => row.departmentId === String(department._id)));
+      assert.equal((await pendingClient.request("GET", "/users?page=2&q=Paging")).status, 403);
+      await User.updateOne({ _id: manager._id }, { $set: { departmentId: null } });
+      const noDepartment = await managerClient.request("GET", `/users?page=2&departmentId=${otherDepartment._id}`);
+      assert.equal(noDepartment.status, 200);
+      assert.equal(noDepartment.body.total, 0);
+      assert.deepEqual(noDepartment.body.users, []);
+      await User.updateOne({ _id: manager._id }, { $set: { departmentId: department._id } });
+      await User.deleteMany({ _id: { $in: fixtures.map((row) => row._id) } });
+    });
+
+    await t.test("audit pages search all matching events and remain administrator-only", async () => {
+      const createdAt = new Date("2020-06-15T12:00:00.000Z");
+      await AuditLog.insertMany(Array.from({ length: 265 }, (_, index) => ({
+        eventType: "PAGINATION_FIXTURE",
+        description: `Paging [literal] event ${index}`,
+        userId: index % 2 ? employee._id : manager._id,
+        userName: `Paging identity ${index}`,
+        ipAddress: "198.51.100.42",
+        status: index % 2 ? "CRITICAL" : "SUCCESS",
+        createdAt,
+      })));
+      const ids = [];
+      for (let page = 1; page <= 3; page++) {
+        const response = await adminClient.request("GET", `/audit-logs?eventType=PAGINATION_FIXTURE&limit=100&page=${page}`);
+        assert.equal(response.status, 200);
+        assert.equal(response.body.total, 265);
+        assert.equal(response.body.totalPages, 3);
+        ids.push(...response.body.logs.map((row) => row.id));
+      }
+      assert.equal(new Set(ids).size, 265);
+      const filtered = await adminClient.request("GET", `/audit-logs?eventType=PAGINATION_FIXTURE&q=198.51.100.42&status=CRITICAL&userId=${employee._id}&from=2020-06-15&to=2020-06-16&limit=10&page=2`);
+      assert.equal(filtered.body.total, 132);
+      assert.equal(filtered.body.logs.length, 10);
+      assert.ok(filtered.body.logs.every((row) => row.status === "CRITICAL" && row.userId === String(employee._id)));
+      const literal = await adminClient.request("GET", "/audit-logs?q=%5Bliteral%5D&eventType=PAGINATION_FIXTURE");
+      assert.equal(literal.body.total, 265);
+      const noMatch = await adminClient.request("GET", "/audit-logs?eventType=PAGINATION_FIXTURE&from=2021-01-01&page=50");
+      assert.equal(noMatch.body.total, 0);
+      assert.equal(noMatch.body.page, 1);
+      assert.deepEqual(noMatch.body.logs, []);
+      for (const sessionClient of [managerClient, pendingClient]) {
+        for (const query of ["page=2&limit=10", "q=Paging&status=CRITICAL", `userId=${manager._id}&page=999`]) {
+          const response = await sessionClient.request("GET", `/audit-logs?${query}`);
+          assert.equal(response.status, 403);
+          assert.equal(response.body.logs, undefined);
+          assert.equal(response.body.total, undefined);
+        }
+      }
+      await AuditLog.deleteMany({ eventType: "PAGINATION_FIXTURE" });
+    });
+
+    await t.test("invalid list parameters are rejected rather than widening filters", async () => {
+      for (const route of ["/users", "/audit-logs"]) {
+        for (const query of ["page=0", "page=-1", "page=1.5", "page=1e9", "limit=101", "limit=NaN", "page=1&page=2", "q=a&q=b", "status=UNKNOWN", `q=${"x".repeat(81)}`]) {
+          const response = await adminClient.request("GET", `${route}?${query}`);
+          assert.equal(response.status, 400, `${route}?${query}`);
+        }
+      }
+      for (const route of ["/users?departmentId=invalid", "/audit-logs?userId=invalid", "/audit-logs?from=invalid", "/audit-logs?from=2021-01-01&to=2020-01-01"]) {
+        assert.equal((await adminClient.request("GET", route)).status, 400);
+      }
+      const defaults = await adminClient.request("GET", "/users");
+      assert.equal(defaults.body.page, 1);
+      assert.equal(defaults.body.limit, 25);
+      assert.equal(defaults.body.total, await User.countDocuments());
+    });
+
     await t.test("9. Role change immediately invalidates existing authorization", async () => {
       assert.equal((await adminClient.request("PATCH", `/users/${manager._id}`, { role: "EMPLOYEE" })).status, 200);
       assert.equal((await User.findById(manager._id)).role, "EMPLOYEE");

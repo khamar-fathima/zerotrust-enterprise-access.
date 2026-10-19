@@ -9,6 +9,8 @@ import {
   DataTable, EmptyState, LoadingRows, Modal, Notice, PageHeading, Panel,
 } from "../../components/Shared.jsx";
 import useRemote from "../../hooks/useRemote.js";
+import usePaginatedRemote from "../../hooks/usePaginatedRemote.js";
+import Pagination from "../../components/Pagination.jsx";
 
 export function RolesPage() {
   const [roles, setRoles] = useState([]);
@@ -82,12 +84,18 @@ export function SessionsPage({ role, user, history = false }) {
   </main>;
 }
 
-export function AuditPage() {
-  const [query, setQuery] = useState("");
-  const { rows, loading, error, refresh } = useRemote(() => api.audit(), []);
-  const filtered = rows.filter((row) => `${row.eventType} ${row.description} ${row.userName} ${row.ipAddress} ${row.status}`.toLowerCase().includes(query.toLowerCase()));
+export function AuditPage({ user }) {
+  const { rows, params, total, totalPages, setFilter, setPage, loading, error, refresh } = usePaginatedRemote(api.audit, "logs", user?.id || "");
   return <main className="content"><PageHeading kicker="Accountability" title="Audit logs." description="A record of access and policy events supplied by the identity service." action={<button className="btn btn-outline" onClick={refresh} disabled={loading}><RefreshCw size={14} /> Refresh</button>} />
-    <Notice type="error">{error}</Notice><div className="toolbar"><input className="field search-field" placeholder="Filter events" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
-    <Panel title={`${filtered.length} audit events`} note="Audit events are read-only">{loading ? <div style={{ padding: 20 }}><LoadingRows /></div> : <DataTable rows={filtered} columns={COLUMNS.audit} empty="No audit events found" />}</Panel>
+    <Notice type="error">{error}</Notice><div className="toolbar list-filters">
+      <input className="field search-field" aria-label="Search audit events" placeholder="Search events, people or IP addresses" maxLength={80} value={params.q} onChange={(e) => setFilter("q", e.target.value)} />
+      <select className="select" aria-label="Filter audit events by status" value={params.status || ""} onChange={(e) => setFilter("status", e.target.value)}><option value="">All severities</option>{["SUCCESS", "WARNING", "CRITICAL"].map((status) => <option key={status}>{status}</option>)}</select>
+      <input className="field" aria-label="Filter by exact event type" placeholder="Exact event type" maxLength={80} value={params.eventType || ""} onChange={(e) => setFilter("eventType", e.target.value)} />
+      <label className="panel-note">From (UTC)<input className="field" type="date" aria-label="Audit start date" value={params.from?.slice(0, 10) || ""} onChange={(e) => setFilter("from", e.target.value ? `${e.target.value}T00:00:00.000Z` : "")} /></label>
+      <label className="panel-note">To (UTC)<input className="field" type="date" aria-label="Audit end date" value={params.to?.slice(0, 10) || ""} onChange={(e) => setFilter("to", e.target.value ? `${e.target.value}T23:59:59.999Z` : "")} /></label>
+    </div>
+    <Panel title={loading ? "Loading audit events" : `${total} audit events`} note="Audit events are read-only">{loading ? <div style={{ padding: 20 }}><LoadingRows /></div> : <DataTable rows={rows} columns={COLUMNS.audit} empty={error ? "Audit events could not be loaded" : "No audit events found"} />}
+      <Pagination page={params.page} limit={params.limit} total={total} totalPages={totalPages} loading={loading} onPage={setPage} onLimit={(value) => setFilter("limit", value)} />
+    </Panel>
   </main>;
 }

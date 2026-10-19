@@ -8,26 +8,32 @@ import {
 import {
   DataTable, EmptyState, LoadingRows, Modal, Notice, PageHeading, Panel,
 } from "../../components/Shared.jsx";
+import usePaginatedRemote from "../../hooks/usePaginatedRemote.js";
+import Pagination from "../../components/Pagination.jsx";
 
 export function DepartmentPage({ user }) {
   const [department, setDepartment] = useState(null);
-  const [members, setMembers] = useState([]);
+  const loadMembers = useCallback((params, options) => api.users.list({
+    ...params, departmentId: user.departmentId || "000000000000000000000000",
+  }, options), [user.departmentId]);
+  const directory = usePaginatedRemote(loadMembers, "users", `${user.id || ""}:${user.departmentId || ""}`);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   useEffect(() => {
     let active = true;
-    Promise.all([api.departments(), api.users.list()]).then(([departmentResponse, userResponse]) => {
+    api.departments().then((departmentResponse) => {
       if (!active) return;
       const departments = safeArray(departmentResponse);
       const id = user.departmentId || user.department?.id || user.department?._id;
       const match = departments.find((item) => String(item.id || item._id) === String(id)) || departments.find((item) => item.name === user.departmentName);
       setDepartment(match || (user.departmentName ? { name: user.departmentName, id } : null));
-      setMembers(id || user.departmentName ? safeArray(userResponse).filter((person) => String(person.departmentId) === String(id) || (user.departmentName && person.departmentName === user.departmentName)) : []);
     }).catch((err) => { if (active) setError(errorMessage(err, "Department details could not be loaded.")); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [user]);
   return <main className="content"><PageHeading kicker="Organizational scope" title={department?.name || user.departmentName || "Department overview."} description="Department details and people available within your current manager scope." />
-    <Notice type="error">{error}</Notice>{loading ? <div className="panel" style={{ padding: 20 }}><LoadingRows /></div> : <><div className="metric-grid"><div className="panel metric-card"><div className="metric-label">Department identity</div><div className="metric-value" style={{ fontSize: 20 }}>{department?.name || "Not assigned"}</div><div className="metric-foot">Service-sourced organization</div></div><div className="panel metric-card"><div className="metric-label">People in scope</div><div className="metric-value">{members.length}</div><div className="metric-foot">Users returned for this department</div></div></div><Panel title="Department directory" note="No cross-department data is presented">{members.length ? <DataTable rows={members} columns={COLUMNS.users} /> : <EmptyState title="No department members returned" detail="The service did not return identities in this scope." icon={Users} />}</Panel></>}</main>;
+    <Notice type="error">{error || directory.error}</Notice>{loading ? <div className="panel" style={{ padding: 20 }}><LoadingRows /></div> : <><div className="metric-grid"><div className="panel metric-card"><div className="metric-label">Department identity</div><div className="metric-value" style={{ fontSize: 20 }}>{department?.name || "Not assigned"}</div><div className="metric-foot">Service-sourced organization</div></div><div className="panel metric-card"><div className="metric-label">People in scope</div><div className="metric-value">{directory.loading ? "…" : directory.total}</div><div className="metric-foot">Active employees in your department</div></div></div><Panel title="Department directory" note="No cross-department data is presented">{directory.loading ? <div style={{ padding: 20 }}><LoadingRows /></div> : directory.rows.length ? <DataTable rows={directory.rows} columns={COLUMNS.users} /> : <EmptyState title={directory.error ? "Department members could not be loaded" : "No department members returned"} detail="The service did not return identities in this scope." icon={Users} />}
+      <Pagination page={directory.params.page} limit={directory.params.limit} total={directory.total} totalPages={directory.totalPages} loading={directory.loading} onPage={directory.setPage} onLimit={(value) => directory.setFilter("limit", value)} />
+    </Panel></>}</main>;
 }
 
 export function ProfilePage({ user, onUser }) {

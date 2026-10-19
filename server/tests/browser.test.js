@@ -8,8 +8,8 @@ import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
 import { createServer as createViteServer } from "vite";
 import { chromium } from "playwright-core";
-import { Department, Device, User } from "../models/index.js";
-import { encryptSecret, generateTotp, newTotpSecret, randomToken } from "../lib/security.js";
+import { AuditLog, Department, Device, User } from "../models/index.js";
+import { encryptSecret, generateTotp, hashToken, newTotpSecret, randomToken } from "../lib/security.js";
 
 const mongoUri = process.env.MONGODB_URI;
 const chromiumExecutable = process.env.REPLIT_PLAYWRIGHT_CHROMIUM_EXECUTABLE;
@@ -161,15 +161,30 @@ test("browser sign-in, MFA enrollment, and pending-device approval", {
       await adminPage.getByRole("link", { name: "Device approvals" }).click();
       await adminPage.getByRole("heading", { name: "Device approvals.", exact: true }).waitFor();
       const employeeRow = adminPage.getByRole("row").filter({ hasText: "Browser Test Employee" });
-      await employeeRow.getByRole("button", { name: "Review device" }).waitFor();
-      await employeeRow.getByRole("button", { name: "Review device" }).click();
-      await adminPage.getByRole("button", { name: "Approve device" }).click();
-      await employeeRow.getByText("APPROVED", { exact: true }).waitFor();
 
-      await employeePage.getByRole("button", { name: "Continue" }).waitFor({ timeout: 12_000 });
-      await employeePage.getByRole("button", { name: "Continue" }).click();
-      await employeePage.getByRole("heading", { name: "Your access, in focus." }).waitFor();
-      assert.equal(await Device.countDocuments({ userId: employee._id, status: "APPROVED" }), 1);
+    const otherDepartment = await Department.create({ name: "Browser other department" });
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+      await page.goto(`${appOrigin}/manager/login`);
+      await page.locator("#email").fill(managerEmail);
+      await page.locator("#password").fill(employeePassword);
+      await page.getByRole("button", { name: /Continue securely/ }).click();
+      await page.locator("#challenge-code").fill(generateTotp(employeeSecret));
+      await page.getByRole("button", { name: "Verify code" }).click();
+      await page.getByRole("heading", { name: "Team access, at a glance." }).waitFor();
+      await page.goto(`${appOrigin}/manager/employees`);
+      await page.getByLabel("Search identities").fill("Pagination");
+      await waitForPage(page, "1–25 of 30 · Page 1 of 2");
+      await page.getByRole("button", { name: "Next", exact: true }).click();
+      await waitForPage(page, "26–30 of 30 · Page 2 of 2");
+      assert.ok(!(await page.locator("tbody").innerText()).includes("foreign identity"));
+      await page.getByLabel("Search identities").fill("Pagination foreign");
+      await waitForPage(page, "0–0 of 0 · Page 0 of 0");
+      await page.getByRole("heading", { name: "No identities match your search" }).waitFor();
+      assert.equal(await page.getByLabel("Filter identities by department").count(), 0);
+      await page.goto(`${appOrigin}/manager/audit`);
+      await page.getByRole("alert").waitFor();
+      assert.equal(await page.locator("tbody tr").count(), 0);
+      await context.close();
     });
 
     assert.deepEqual(pageErrors, [], "browser pages should not report uncaught JavaScript errors");
@@ -184,3 +199,31 @@ test("browser sign-in, MFA enrollment, and pending-device approval", {
     }
   }
 });
+
+      let finishSlow;
+
+        const response = await route.fetch();
+
+      const credential = randomToken(40);
+
+      const manager = await User.create({
+        name: "Browser manager", email: managerEmail, role: "MANAGER", status: "ACTIVE",
+        departmentId: department._id, passwordHash: await bcrypt.hash(employeePassword, 4),
+        mfaEnabled: true, mfaSecretEncrypted: encryptSecret(employeeSecret),
+      });
+
+      const slowFinished = new Promise((resolve) => { finishSlow = resolve; });
+
+    const waitForPage = async (page, text) => {
+      await page.getByRole("navigation", { name: "List pagination" }).getByText(text, { exact: true }).waitFor();
+    };
+
+      const context = await browser.newContext();
+
+    const pagination = adminPage.getByRole("navigation", { name: "List pagination" });
+
+      const slowRequest = adminPage.waitForRequest((request) => new URL(request.url()).searchParams.get("q") === "Pagination slow");
+
+      const managerEmail = `manager-${randomToken(6).toLowerCase()}@example.test`;
+
+      const page = await context.newPage();

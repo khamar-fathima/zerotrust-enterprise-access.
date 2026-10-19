@@ -7,19 +7,18 @@ import {
 import {
   DataTable, LoadingRows, Modal, Notice, PageHeading, Panel,
 } from "../../components/Shared.jsx";
-import useRemote from "../../hooks/useRemote.js";
+import usePaginatedRemote from "../../hooks/usePaginatedRemote.js";
+import Pagination from "../../components/Pagination.jsx";
 
-export default function UsersPage({ role }) {
-  const [query, setQuery] = useState("");
+export default function UsersPage({ role, user }) {
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [departments, setDepartments] = useState([]);
   const [form, setForm] = useState({ name: "", email: "", role: "EMPLOYEE", status: "ACTIVE", departmentId: "", temporaryPassword: "" });
   const [busy, setBusy] = useState(false);
   const [revokeUser, setRevokeUser] = useState(null);
-  const { rows, loading, error, refresh, setError } = useRemote(() => api.users.list(), []);
+  const { rows, params, total, totalPages, setFilter, setPage, loading, error, refresh, setError } = usePaginatedRemote(api.users.list, "users", `${user?.id || ""}:${role}:${user?.departmentId || ""}`);
   useEffect(() => { api.departments().then((d) => setDepartments(safeArray(d))).catch(() => {}); }, []);
-  const filtered = rows.filter((u) => `${u.name} ${u.email} ${u.role} ${u.departmentName} ${u.status}`.toLowerCase().includes(query.toLowerCase()));
   const review = async (user, decision) => {
     setError("");
     try { await api.users.review(user.id || user._id, decision); await refresh(); }
@@ -70,9 +69,16 @@ export default function UsersPage({ role }) {
   return <main className="content">
     <PageHeading kicker={role === "manager" ? "Department scope" : "Identity directory"} title={role === "manager" ? "People in your department." : "User management."} description="Review identity state and manage access requests." action={role === "admin" ? <button className="btn btn-primary" onClick={() => { setEditing(null); setForm({ name: "", email: "", role: "EMPLOYEE", status: "ACTIVE", departmentId: "", temporaryPassword: "" }); setModal(true); }}><Plus size={15} /> Add identity</button> : null} />
     <Notice type="error">{error}</Notice>
-    <div className="toolbar"><div style={{ position: "relative", flex: 1 }}><Search size={15} style={{ position: "absolute", top: 11, left: 11, color: "#71807a" }} /><input className="field search-field" aria-label="Search identities" placeholder="Search people, roles or departments" value={query} onChange={(e) => setQuery(e.target.value)} style={{ paddingLeft: 34 }} /></div><button className="btn btn-outline" onClick={refresh} disabled={loading}><RefreshCw size={14} /> Refresh</button></div>
-    <Panel title={`${filtered.length} identities`} note="Changes are recorded by the identity service">
-      {loading ? <div style={{ padding: 20 }}><LoadingRows /></div> : <DataTable rows={filtered} columns={COLUMNS.users} empty="No identities match your search" renderActions={renderUserActions} />}
+    <div className="toolbar list-filters"><div style={{ position: "relative", flex: "1 1 240px" }}><Search size={15} style={{ position: "absolute", top: 11, left: 11, color: "#71807a" }} /><input className="field search-field" aria-label="Search identities" placeholder="Search people, roles or departments" maxLength={80} value={params.q} onChange={(e) => setFilter("q", e.target.value)} style={{ paddingLeft: 34 }} /></div>
+      {role === "admin" && <>
+        <select className="select" aria-label="Filter identities by role" value={params.role || ""} onChange={(e) => setFilter("role", e.target.value)}><option value="">All roles</option><option value="ADMIN">Administrator</option><option value="MANAGER">Manager</option><option value="EMPLOYEE">Employee</option></select>
+        <select className="select" aria-label="Filter identities by status" value={params.status || ""} onChange={(e) => setFilter("status", e.target.value)}><option value="">All statuses</option>{["PENDING", "ACTIVE", "DISABLED", "REJECTED"].map((status) => <option key={status}>{status}</option>)}</select>
+        <select className="select" aria-label="Filter identities by department" value={params.departmentId || ""} onChange={(e) => setFilter("departmentId", e.target.value)}><option value="">All departments</option>{departments.map((department) => <option key={department.id || department._id} value={department.id || department._id}>{department.name}</option>)}</select>
+      </>}
+      <button className="btn btn-outline" onClick={refresh} disabled={loading}><RefreshCw size={14} /> Refresh</button></div>
+    <Panel title={loading ? "Loading identities" : `${total} identities`} note={role === "manager" ? "Active employees in your department only" : "Changes are recorded by the identity service"}>
+      {loading ? <div style={{ padding: 20 }}><LoadingRows /></div> : <DataTable rows={rows} columns={COLUMNS.users} empty={error ? "Identities could not be loaded" : "No identities match your search"} renderActions={renderUserActions} />}
+      <Pagination page={params.page} limit={params.limit} total={total} totalPages={totalPages} loading={loading} onPage={setPage} onLimit={(value) => setFilter("limit", value)} />
     </Panel>
     {modal && <Modal title={editing ? "Edit identity" : "Create an identity"} description="Save user changes through the identity service." onClose={() => { setModal(false); setEditing(null); }}><form onSubmit={saveUser}>
       <div className="form-grid"><div className="form-field"><label>Name</label><input className="field" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>{editing ? <div className="form-field"><label>Email · read-only</label><input className="field" type="email" value={editing.email || ""} readOnly /></div> : <div className="form-field"><label>Email</label><input className="field" required type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>}<div className="form-field"><label>Role</label><select className="select" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}><option value="EMPLOYEE">Employee</option><option value="MANAGER">Manager</option><option value="ADMIN">Administrator</option></select></div><div className="form-field"><label>Department</label><select className="select" value={form.departmentId} onChange={(e) => setForm({ ...form, departmentId: e.target.value })}><option value="">Select</option>{departments.map((d) => <option key={d.id || d._id} value={d.id || d._id}>{d.name}</option>)}</select></div>{editing ? <div className="form-field"><label>Status</label><select className="select" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option value="ACTIVE">Active</option><option value="PENDING">Pending</option><option value="DISABLED">Disabled</option></select></div> : <div className="form-field"><label>Temporary password</label><input className="field" type="password" required minLength="12" value={form.temporaryPassword} onChange={(e) => setForm({ ...form, temporaryPassword: e.target.value })} /><span className="panel-note">12+ characters with uppercase, lowercase and a number.</span></div>}</div>

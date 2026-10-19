@@ -45,7 +45,7 @@ export const api = {
     activity: (range = "7d") => request(http.get("/dashboard/activity", { params: { range } })),
   },
   users: {
-    list: (params) => request(http.get("/users", { params })),
+    list: (params, options = {}) => request(http.get("/users", { ...options, params })),
     create: (data) => request(http.post("/users", data)),
     update: (id, data) => request(http.patch(`/users/${id}`, data)),
     review: (id, decision) => request(http.post(`/users/${id}/review`, { decision })),
@@ -61,7 +61,7 @@ export const api = {
     revoke: (id) => request(http.delete(`/sessions/${id}`)),
     revokeAll: (userId) => request(http.post("/sessions/revoke-all", { userId })),
   },
-  audit: (params) => request(http.get("/audit-logs", { params })),
+  audit: (params, options = {}) => request(http.get("/audit-logs", { ...options, params })),
   resources: {
     list: () => request(http.get("/resources")),
     create: (data) => request(http.post("/resources", data)),

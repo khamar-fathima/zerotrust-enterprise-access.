@@ -102,6 +102,10 @@ td strong { font-weight:700; }
 .icon-button { border:1px solid var(--line); color:var(--ink-soft); background:var(--surface); border-radius:5px; padding:7px; display:inline-flex; align-items:center; justify-content:center; }
 .icon-button:hover { background:var(--surface-2); }
 .toolbar { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+.list-filters { flex-wrap:wrap; }
+.list-filters > .select { width:auto; max-width:100%; }
+.list-filters > .field { flex:1 1 220px; width:auto; }
+.list-filters > label { flex:0 1 155px; }
 .field, .select, .textarea { width:100%; background:#fff; border:1px solid #d3ddd4; border-radius:5px; padding:10px 12px; color:var(--ink); outline:none; font-size:12px; }
 .field:focus,.select:focus,.textarea:focus { border-color:var(--moss); box-shadow:0 0 0 3px rgba(71,119,101,.1); }
 .search-field { max-width:300px; }

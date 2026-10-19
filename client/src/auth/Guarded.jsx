@@ -68,14 +68,14 @@ export default function Guarded({ role, onUser }) {
       <Routes>
         <Route index element={<DashboardPage role={role} />} />
         <Route path="dashboard" element={<DashboardPage role={role} />} />
-        <Route path="users" element={<UsersPage role={role} />} />
+        <Route path="users" element={<UsersPage role={role} user={state.user} />} />
         <Route path="roles" element={<RolesPage />} />
         <Route path="devices" element={<DevicesPage role={role} />} />
         <Route path="sessions" element={<SessionsPage role={role} user={state.user} />} />
-        <Route path="audit" element={<AuditPage />} />
+        <Route path="audit" element={<AuditPage user={state.user} />} />
         <Route path="resources" element={<ResourcesPage role={role} />} />
         <Route path="department" element={<DepartmentPage user={state.user} />} />
-        <Route path="employees" element={<UsersPage role={role} />} />
+        <Route path="employees" element={<UsersPage role={role} user={state.user} />} />
         <Route path="history" element={<SessionsPage role={role} user={state.user} history />} />
         <Route path="security" element={<SecurityPage user={state.user} />} />
         <Route path="settings" element={<SettingsPage user={state.user} />} />
