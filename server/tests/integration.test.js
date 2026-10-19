@@ -798,6 +798,82 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
           assert.equal(JSON.stringify(row).includes(target.email), false, "the audit API must not include the transferred user's email");
         }
       });
+
+      await t.test("transfer from a named department to unassigned is clear and private in the audit API", async () => {
+        const target = await makeUser("EMPLOYEE", {
+          departmentId: formerDepartment._id,
+          name: "Named department to unassigned audit target",
+        });
+        const update = await adminClient.request("PATCH", `/users/${target._id}`, { departmentId: null });
+        assert.equal(update.status, 200);
+        assert.equal(update.body.user.departmentId, null);
+
+        const auditApi = await adminClient.request("GET",
+          `/audit-logs?eventType=USER_UPDATED&userId=${admin._id}`);
+        assert.equal(auditApi.status, 200);
+        const row = auditApi.body.logs.find((item) =>
+          item.metadata?.targetUserId === String(target._id) &&
+          item.description.includes(`Department changed from ${formerDepartment.name} to Unassigned.`));
+        assert.ok(row, "the transfer to unassigned must be visible through the administrator audit API");
+        assert.deepEqual({
+          oldDepartmentId: row.metadata.oldDepartmentId,
+          oldDepartmentName: row.metadata.oldDepartmentName,
+          newDepartmentId: row.metadata.newDepartmentId,
+          newDepartmentName: row.metadata.newDepartmentName,
+        }, {
+          oldDepartmentId: String(formerDepartment._id),
+          oldDepartmentName: formerDepartment.name,
+          newDepartmentId: null,
+          newDepartmentName: null,
+        });
+        assert.equal(row.user, undefined);
+        const serializedRow = JSON.stringify(row);
+        assert.equal(serializedRow.includes(target.email), false, "the audit API must not include the transferred user's email");
+        for (const field of ["passwordHash", "mfaSecretEncrypted", "recoveryCodeHashes"]) {
+          assert.equal(Object.hasOwn(row, field), false, `${field} must not appear in the audit row`);
+          assert.equal(Object.hasOwn(row.metadata, field), false, `${field} must not appear in transfer audit metadata`);
+          assert.equal(serializedRow.includes(field), false, `${field} must not appear anywhere in the audit response`);
+        }
+      });
+
+      await t.test("transfer from unassigned to a named department is clear and private in the audit API", async () => {
+        const target = await makeUser("EMPLOYEE", {
+          departmentId: null,
+          name: "Unassigned to named department audit target",
+        });
+        const update = await adminClient.request("PATCH", `/users/${target._id}`, {
+          departmentId: String(newDepartment._id),
+        });
+        assert.equal(update.status, 200);
+        assert.equal(update.body.user.departmentId, String(newDepartment._id));
+
+        const auditApi = await adminClient.request("GET",
+          `/audit-logs?eventType=USER_UPDATED&userId=${admin._id}`);
+        assert.equal(auditApi.status, 200);
+        const row = auditApi.body.logs.find((item) =>
+          item.metadata?.targetUserId === String(target._id) &&
+          item.description.includes(`Department changed from Unassigned to ${newDepartment.name}.`));
+        assert.ok(row, "the transfer from unassigned must be visible through the administrator audit API");
+        assert.deepEqual({
+          oldDepartmentId: row.metadata.oldDepartmentId,
+          oldDepartmentName: row.metadata.oldDepartmentName,
+          newDepartmentId: row.metadata.newDepartmentId,
+          newDepartmentName: row.metadata.newDepartmentName,
+        }, {
+          oldDepartmentId: null,
+          oldDepartmentName: null,
+          newDepartmentId: String(newDepartment._id),
+          newDepartmentName: newDepartment.name,
+        });
+        assert.equal(row.user, undefined);
+        const serializedRow = JSON.stringify(row);
+        assert.equal(serializedRow.includes(target.email), false, "the audit API must not include the transferred user's email");
+        for (const field of ["passwordHash", "mfaSecretEncrypted", "recoveryCodeHashes"]) {
+          assert.equal(Object.hasOwn(row, field), false, `${field} must not appear in the audit row`);
+          assert.equal(Object.hasOwn(row.metadata, field), false, `${field} must not appear in transfer audit metadata`);
+          assert.equal(serializedRow.includes(field), false, `${field} must not appear anywhere in the audit response`);
+        }
+      });
     });
 
     await t.test("manager promotion revokes the old session and grants global administrator access after fresh sign-in", async () => {
