@@ -1,0 +1,824 @@
+PROJECT TITLE:
+ZeroTrust — Enterprise Identity & Access Management Platform
+
+Act as a senior full-stack MERN developer and cybersecurity
+engineer.
+
+Build a complete, functional, professional Zero Trust
+Enterprise Access Management System using the MERN stack.
+
+IMPORTANT EXISTING PROJECT CONTEXT:
+
+The current Replit workspace is named zero-trust-mern.
+
+The uploaded ZIP contains only Vite cache metadata and
+macOS-generated files. It does not contain usable source code.
+
+Therefore, build the entire project from scratch inside
+the existing workspace.
+
+Do not create another nested zero-trust-mern directory.
+
+==================================================
+1. PROBLEM STATEMENT
+==================================================
+
+Organizations face increasing cyber threats due to excessive
+user privileges and weak access controls.
+
+This platform implements Zero Trust principles using:
+
+1. Role-Based Access Control (RBAC)
+2. Multi-Factor Authentication (MFA)
+3. Device Verification
+4. Session Monitoring
+5. Security Auditing
+
+The objective is to ensure secure enterprise access through
+continuous identity verification and least-privilege access.
+
+This must be a WORKING application, not just a frontend
+prototype or static dashboard.
+
+==================================================
+2. TECHNOLOGY STACK
+==================================================
+
+Frontend:
+- React.js
+- Vite
+- Tailwind CSS
+- React Router
+- Axios
+- Lucide React icons
+- Recharts for analytics
+
+Backend:
+- Node.js
+- Express.js
+- MongoDB
+- Mongoose
+
+Security:
+- JWT authentication
+- HTTP-only secure cookies
+- bcrypt password hashing
+- TOTP-based MFA
+- QR code generation
+- Server-side session validation
+- Express Rate Limit
+- Helmet
+- Input validation
+
+Use JavaScript throughout the project.
+
+Maintain separate client and server directories.
+
+Use MongoDB Atlas through environment variables.
+
+Never hardcode database credentials, authentication
+secrets, or administrator passwords.
+
+==================================================
+3. APPLICATION LANDING PAGE
+==================================================
+
+Create a professional landing page.
+
+Application name:
+
+ZEROTRUST
+Enterprise Access Management
+
+Display the tagline:
+
+"Never Trust. Always Verify."
+
+The landing page should contain three separate
+login portal cards:
+
+1. ADMINISTRATOR PORTAL
+2. MANAGER PORTAL
+3. EMPLOYEE PORTAL
+
+Each card should have its own icon, description
+and login button.
+
+Routes:
+
+/admin/login
+/manager/login
+/employee/login
+
+Make the landing page visually appealing with a
+modern cybersecurity SaaS design.
+
+==================================================
+4. THREE SEPARATE LOGIN SYSTEMS
+==================================================
+
+Implement three distinct login interfaces.
+
+ADMIN LOGIN:
+- Email
+- Password
+- MFA verification
+- Device verification
+
+After successful authentication:
+Redirect to /admin/dashboard
+
+MANAGER LOGIN:
+- Email
+- Password
+- MFA verification
+- Device verification
+
+After successful authentication:
+Redirect to /manager/dashboard
+
+EMPLOYEE LOGIN:
+- Email
+- Password
+- MFA verification
+- Device verification
+
+After successful authentication:
+Redirect to /employee/dashboard
+
+IMPORTANT:
+
+Although there are three separate frontend login
+portals, use a centralized backend authentication
+system with strict role validation.
+
+An employee entering the administrator login URL
+must NOT gain administrator access.
+
+The backend must verify that the authenticated
+user belongs to the selected portal role.
+
+Do not rely only on frontend route protection.
+
+==================================================
+5. USER REGISTRATION AND MANAGEMENT
+==================================================
+
+Implement secure user registration.
+
+Employees can submit registration requests.
+
+Administrators can:
+- View pending registrations
+- Approve users
+- Reject users
+- Create manager accounts
+- Create employee accounts
+- Assign roles
+- Disable accounts
+- Reactivate accounts
+
+Users must NEVER be allowed to assign themselves
+administrator or manager privileges.
+
+Implement a secure initial administrator setup
+using environment configuration or a one-time
+bootstrap script.
+
+Never expose public administrator registration.
+
+==================================================
+6. ROLE-BASED ACCESS CONTROL (RBAC)
+==================================================
+
+Implement three roles:
+
+ADMIN
+MANAGER
+EMPLOYEE
+
+ADMIN PERMISSIONS:
+
+- Manage all users
+- Assign and revoke roles
+- Approve registered devices
+- View all active sessions
+- Terminate suspicious sessions
+- Access security audit logs
+- View organization-wide analytics
+- Manage protected resources
+
+MANAGER PERMISSIONS:
+
+- Access manager dashboard
+- View assigned department employees
+- Access authorized organizational resources
+- View department-level activity
+- View permitted security alerts
+- Manage personal sessions and devices
+
+EMPLOYEE PERMISSIONS:
+
+- Access employee dashboard
+- View personal profile
+- Access assigned resources
+- View personal login history
+- Register personal devices
+- Manage personal sessions
+- Configure MFA
+
+Create reusable backend RBAC middleware.
+
+Permissions must be checked on every protected
+API request.
+
+==================================================
+7. MULTI-FACTOR AUTHENTICATION (MFA)
+==================================================
+
+Implement real TOTP-based MFA.
+
+Features:
+
+- MFA enrollment
+- Generate authenticator QR code
+- Six-digit OTP verification
+- Compatibility with standard authenticator apps
+- MFA activation and deactivation
+- Single-use recovery codes
+
+Authentication flow:
+
+Step 1: Enter email and password
+Step 2: Verify credentials
+Step 3: Complete MFA
+Step 4: Verify device
+Step 5: Validate user role
+Step 6: Grant authorized access
+
+Do not issue a fully authenticated session before
+all required verification stages are completed.
+
+Store MFA secrets securely and encrypted at rest.
+
+Store recovery codes as hashes.
+
+Protect MFA setup and disabling operations with
+appropriate reauthentication.
+
+==================================================
+8. DEVICE VERIFICATION
+==================================================
+
+Implement a registered-device verification system.
+
+When a user logs in from a new device:
+
+- Detect that the device is unrecognized
+- Create a pending device registration
+- Display a device verification screen
+- Require administrator approval
+- Prevent access until approval is completed
+
+Device information should include:
+
+- Device name
+- Browser
+- Operating system
+- Registration timestamp
+- Last activity
+- Approval status
+
+Device statuses:
+
+PENDING
+APPROVED
+REVOKED
+
+Administrators can approve or revoke devices.
+
+Use cryptographically secure device credentials,
+store only their hashes server-side, and bind them
+to the appropriate user.
+
+Do not rely on browser fingerprinting or user-agent
+information alone as device authentication.
+
+Use secure cookies and appropriate expiration.
+
+==================================================
+9. SESSION MONITORING
+==================================================
+
+Create real session monitoring functionality.
+
+Track:
+
+- User ID
+- Role
+- Login timestamp
+- Last activity
+- IP address
+- Browser information
+- Device ID
+- Session status
+
+Session statuses:
+
+ACTIVE
+EXPIRED
+REVOKED
+
+ADMIN CAPABILITIES:
+
+- View all active sessions
+- Filter sessions by user
+- Identify unfamiliar sessions
+- Terminate individual sessions
+- Revoke all sessions belonging to a user
+
+EMPLOYEE AND MANAGER CAPABILITIES:
+
+- View personal active sessions
+- Log out from another device
+- Terminate personal sessions
+
+Use MongoDB-backed session records.
+
+Ensure revoked sessions immediately lose access
+to protected backend endpoints.
+
+Implement idle timeout and absolute session expiry.
+
+==================================================
+10. SECURITY AUDITING
+==================================================
+
+Create a centralized security audit logging system.
+
+Track these events:
+
+- Successful login
+- Failed login
+- Failed MFA verification
+- Unauthorized access attempt
+- New device registration
+- Device approval
+- Device revocation
+- Role modification
+- Account suspension
+- Session termination
+- Protected resource access
+
+Each audit record must include:
+
+- Event ID
+- Event type
+- User ID (when available)
+- Timestamp
+- IP address
+- Event description
+- Security status
+
+Security statuses:
+
+SUCCESS
+WARNING
+CRITICAL
+
+Create a searchable audit log interface.
+
+Allow administrators to filter logs by:
+
+- User
+- Event type
+- Date
+- Security status
+
+Audit records should be append-only through the
+application API.
+
+Never expose audit log modification or deletion
+endpoints to ordinary users.
+
+Never log passwords, OTPs, JWTs, MFA secrets,
+recovery codes or raw device credentials.
+
+==================================================
+11. ZERO TRUST ACCESS ENGINE
+==================================================
+
+Implement a reusable backend Zero Trust middleware.
+
+For every protected request, validate:
+
+1. Is the user authenticated?
+2. Is the session active?
+3. Has the required MFA verification been completed?
+4. Is the device approved?
+5. Is the user account active?
+6. Does the user's current role have permission
+   to access the requested resource?
+
+If any required condition fails:
+
+DENY ACCESS.
+
+Record the denied attempt in security audit logs.
+
+Return the appropriate HTTP error response.
+
+Do not trust frontend-provided role information.
+
+Revalidate authorization against server-side
+records to ensure role changes and session
+revocations take effect.
+
+Follow the principle of least privilege.
+
+==================================================
+12. ADMIN DASHBOARD
+==================================================
+
+Create a professional security administration
+dashboard.
+
+Display the following metric cards:
+
+- Total Users
+- Active Users
+- Active Sessions
+- Pending Device Approvals
+- Failed Login Attempts
+- Critical Security Events
+
+Include visual analytics:
+
+- Login Activity Chart
+- Security Events Chart
+- User Distribution by Role
+- Recent Security Activity
+
+Admin sidebar:
+
+Dashboard
+User Management
+Role Management
+Device Approvals
+Session Monitoring
+Security Audit Logs
+Settings
+Logout
+
+All dashboard data must come from real backend APIs.
+
+==================================================
+13. MANAGER DASHBOARD
+==================================================
+
+Display:
+
+- Department Overview
+- Assigned Employees
+- Authorized Resources
+- Department Activity
+- Personal Security Status
+- Active Sessions
+
+Manager sidebar:
+
+Dashboard
+My Department
+Employees
+Resources
+My Devices
+My Sessions
+Profile
+Logout
+
+Managers must only access information within
+their authorized scope.
+
+==================================================
+14. EMPLOYEE DASHBOARD
+==================================================
+
+Display:
+
+- Welcome message
+- Personal security status
+- MFA status
+- Registered device status
+- Last login
+- Active sessions
+- Authorized resources
+- Recent personal security activity
+
+Employee sidebar:
+
+Dashboard
+My Resources
+My Devices
+My Sessions
+Login History
+Security Settings
+Profile
+Logout
+
+Employees must not access other users' information.
+
+==================================================
+15. PROTECTED RESOURCES
+==================================================
+
+Create a functional protected resources module.
+
+Administrators should be able to create resources
+and assign access permissions.
+
+Example resources:
+
+- Employee Documents
+- Department Reports
+- Management Reports
+- Confidential Admin Records
+
+Use backend RBAC middleware to enforce permissions.
+
+Demonstrate that users cannot access restricted
+resources by directly entering API URLs.
+
+==================================================
+16. DATABASE DESIGN
+==================================================
+
+Create Mongoose models for:
+
+User
+Role
+Permission
+Device
+Session
+AuditLog
+Department
+Resource
+
+Define appropriate relationships, indexes,
+validation rules and timestamps.
+
+Use MongoDB for actual persistent storage.
+
+Do not use hardcoded mock users as the application's
+primary data source.
+
+==================================================
+17. FRONTEND DESIGN
+==================================================
+
+The application should look like a professional
+enterprise cybersecurity product.
+
+Design theme:
+
+- Dark navy sidebar
+- White or light dashboard background
+- Blue and teal accent colors
+- Modern typography
+- Rounded dashboard cards
+- Professional security icons
+- Responsive layouts
+- Clean navigation
+
+Use:
+
+- Loading indicators
+- Form validation
+- Toast notifications
+- Confirmation dialogs
+- Empty states
+- Error messages
+- Security status badges
+
+Every button should perform its intended function.
+
+Do not create decorative buttons without
+functionality.
+
+==================================================
+18. BACKEND API STRUCTURE
+==================================================
+
+Organize APIs into logical modules:
+
+/api/auth
+/api/users
+/api/roles
+/api/devices
+/api/sessions
+/api/audit-logs
+/api/resources
+/api/dashboard
+
+Use:
+
+- Controllers
+- Routes
+- Models
+- Middleware
+- Services
+- Validation utilities
+
+Implement centralized error handling.
+
+Use proper HTTP status codes.
+
+Protect all sensitive API endpoints.
+
+==================================================
+19. SECURITY REQUIREMENTS
+==================================================
+
+Implement:
+
+- Password hashing
+- Secure JWT handling
+- HTTP-only cookies
+- Secure cookie settings in production
+- Appropriate SameSite settings
+- CSRF protection for cookie-authenticated writes
+- CORS configuration
+- Authentication rate limiting
+- Input validation
+- Helmet security headers
+- Session expiration
+- Session revocation
+- Backend authorization
+- Safe error handling
+
+Do not expose stack traces or secrets to users.
+
+Use environment variables for all sensitive
+configuration.
+
+==================================================
+20. PROJECT STRUCTURE
+==================================================
+
+Use this general structure:
+
+zero-trust-mern/
+|
+|-- client/
+|   |-- src/
+|       |-- components/
+|       |-- pages/
+|       |-- layouts/
+|       |-- routes/
+|       |-- context/
+|       |-- services/
+|       |-- hooks/
+|
+|-- server/
+|   |-- config/
+|   |-- controllers/
+|   |-- models/
+|   |-- routes/
+|   |-- middleware/
+|   |-- services/
+|   |-- utils/
+|   |-- tests/
+|
+|-- package.json
+|-- .env.example
+|-- .gitignore
+|-- README.md
+
+==================================================
+21. REPLIT CONFIGURATION
+==================================================
+
+Configure the application to run correctly
+inside Replit.
+
+Install all required dependencies.
+
+Configure frontend and backend communication.
+
+Set up appropriate development scripts.
+
+Make the application accessible through
+the Replit preview.
+
+Provide clear instructions for configuring
+MongoDB Atlas and required environment secrets.
+
+Never commit actual environment credentials.
+
+==================================================
+22. TESTING REQUIREMENTS
+==================================================
+
+Implement tests for these scenarios:
+
+TEST 1:
+Employee successfully logs in through
+the employee portal.
+
+TEST 2:
+Employee attempts administrator login.
+Access must be denied.
+
+TEST 3:
+Manager attempts to access an administrator API.
+Access must be denied.
+
+TEST 4:
+User enters an invalid MFA code.
+Authentication must fail.
+
+TEST 5:
+User logs in from an unapproved device.
+Protected resource access must be denied.
+
+TEST 6:
+Administrator approves the device.
+The user can continue authentication.
+
+TEST 7:
+Administrator revokes an active session.
+Further protected requests using that session fail.
+
+TEST 8:
+Unauthorized resource access generates
+a security audit record.
+
+TEST 9:
+Role changes immediately affect permissions.
+
+TEST 10:
+Employee cannot retrieve another employee's
+private information.
+
+==================================================
+23. FINAL REQUIREMENTS
+==================================================
+
+This is a full-stack college cybersecurity project.
+
+Build all modules with actual working functionality.
+
+Do not generate only a visual prototype.
+
+Do not use simulated authentication.
+
+Do not bypass MFA or device verification.
+
+Do not hardcode administrator credentials.
+
+Build the application incrementally in this order:
+
+PHASE 1:
+Initialize the MERN project and database.
+
+PHASE 2:
+Create the landing page and three login portals.
+
+PHASE 3:
+Implement authentication and RBAC.
+
+PHASE 4:
+Implement MFA.
+
+PHASE 5:
+Implement device verification.
+
+PHASE 6:
+Implement session monitoring.
+
+PHASE 7:
+Implement security auditing.
+
+PHASE 8:
+Implement the Zero Trust access engine.
+
+PHASE 9:
+Build all three dashboards and protected resources.
+
+PHASE 10:
+Test the complete application and fix errors.
+
+After each phase, verify the code before continuing.
+
+If external credentials or MongoDB configuration
+are required, explain exactly what is needed.
+
+Do not silently substitute mock implementations
+for unfinished security features.
+
+Finally, run the complete application and verify
+that the frontend, backend and database communicate
+successfully.
+
+Provide a README containing setup instructions,
+architecture, security features, API documentation
+and testing instructions.
