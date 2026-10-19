@@ -37,13 +37,16 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
   const admin = await makeUser("ADMIN", { isBootstrapAdmin: true });
   const employee = await makeUser("EMPLOYEE");
   const manager = await makeUser("MANAGER");
+    let managerForAdminPromotion;
+    let managerSessionForAdminPromotion;
+    let forwardedForAdminPromotion;
   const restricted = await Resource.create({ name: "Admin-only test record", content: "Private test fixture", classification: "RESTRICTED", allowedRoles: ["ADMIN"] });
 
-  function client(initialCookies = {}) {
+  function client(initialCookies = {}, requestHeaders = {}) {
     const cookies = new Map(Object.entries(initialCookies));
     return {
       async request(method, route, body) {
-        const headers = { "Content-Type": "application/json" };
+        const headers = { "Content-Type": "application/json", ...requestHeaders };
         if (cookies.size) headers.Cookie = [...cookies].map(([key, value]) => `${key}=${value}`).join("; ");
         if (!["GET", "HEAD"].includes(method) && cookies.has("zt_csrf")) headers["X-CSRF-Token"] = decodeURIComponent(cookies.get("zt_csrf"));
         const response = await fetch(`${origin}/api${route}`, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
@@ -59,10 +62,13 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
     };
   }
 
-  async function knownClient(user) {
+  async function knownClient(user, forwardedFor) {
     const raw = randomToken(40);
     await Device.create({ userId: user._id, credentialHash: hashToken(raw), name: "Test browser", browser: "Test", operatingSystem: "Test", status: "APPROVED" });
-    return client({ zt_device: raw });
+    return client(
+      { zt_device: raw },
+      forwardedFor ? { "X-Forwarded-For": forwardedFor } : {},
+    );
   }
 
   async function signIn(sessionClient, user, portal = user.role.toLowerCase()) {
@@ -630,7 +636,8 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
           departmentId: formerDepartment._id,
           name: "Combined transfer employee",
         });
-        const combinedTransferClient = await knownClient(combinedTransferUser);
+        forwardedForAdminPromotion = "198.51.100.18";
+        const combinedTransferClient = await knownClient(combinedTransferUser, forwardedForAdminPromotion);
         const initialLogin = await signIn(combinedTransferClient, combinedTransferUser);
         assert.equal(initialLogin.status, 200);
         assert.equal(initialLogin.body.authenticated, true);
@@ -657,10 +664,12 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
         assert.equal(oldSessionRoles.status, 401);
         assert.equal(oldSessionRoles.body.code, "SESSION_REVOKED");
 
-        const newManagerClient = await knownClient(combinedTransferUser);
+        const newManagerClient = await knownClient(combinedTransferUser, forwardedForAdminPromotion);
         const newLogin = await signIn(newManagerClient, combinedTransferUser, "manager");
         assert.equal(newLogin.status, 200);
         assert.equal(newLogin.body.authenticated, true);
+        managerForAdminPromotion = combinedTransferUser;
+        managerSessionForAdminPromotion = newManagerClient;
         const newSession = await Session.findOne({
           userId: combinedTransferUser._id, status: "ACTIVE",
         }).sort({ createdAt: -1 });
@@ -789,6 +798,93 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
           assert.equal(JSON.stringify(row).includes(target.email), false, "the audit API must not include the transferred user's email");
         }
       });
+    });
+
+    await t.test("manager promotion revokes the old session and grants global administrator access after fresh sign-in", async () => {
+      assert.ok(managerForAdminPromotion, "the prior role-transfer scenario must provide an authenticated manager");
+      const promotedUser = managerForAdminPromotion;
+      const oldSessionClient = managerSessionForAdminPromotion;
+      const oldSession = await Session.findOne({
+        userId: promotedUser._id,
+        status: "ACTIVE",
+      }).sort({ createdAt: -1 });
+      assert.ok(oldSession);
+      assert.equal(oldSession.roleAtIssue, "MANAGER");
+
+      const search = "Manager promotion cross-department identity";
+      const [sourceDepartment, otherDepartment] = await Promise.all([
+        Department.create({ name: "Promotion source visibility" }),
+        Department.create({ name: "Promotion other visibility" }),
+      ]);
+      const visibleIdentities = await Promise.all([
+        makeUser("EMPLOYEE", {
+          name: `${search} source`,
+          departmentId: sourceDepartment._id,
+        }),
+        makeUser("EMPLOYEE", {
+          name: `${search} other`,
+          departmentId: otherDepartment._id,
+        }),
+      ]);
+      const managerView = await oldSessionClient.request(
+        "GET", `/users?q=${encodeURIComponent(search)}`,
+      );
+      assert.equal(managerView.status, 200);
+      assert.equal(managerView.body.total, 0, "the manager must not see identities in other departments");
+
+      const update = await adminClient.request("PATCH", `/users/${promotedUser._id}`, {
+        role: "ADMIN",
+      });
+      assert.equal(update.status, 200);
+      assert.equal(update.body.user.role, "ADMIN");
+
+      const revokedSession = await Session.findById(oldSession._id);
+      assert.equal(revokedSession.status, "REVOKED");
+      assert.equal(revokedSession.revokeReason, "Account role or status changed");
+      for (const route of ["/auth/me", "/roles", "/users"]) {
+        const response = await oldSessionClient.request("GET", route);
+        assert.equal(response.status, 401, `the old manager session must not access ${route}`);
+        assert.equal(response.body.code, "SESSION_REVOKED");
+      }
+
+      const freshAdminClient = await knownClient(promotedUser, forwardedForAdminPromotion);
+      const freshLogin = await signIn(freshAdminClient, promotedUser, "admin");
+      assert.equal(freshLogin.status, 200);
+      assert.equal(freshLogin.body.authenticated, true);
+      assert.equal((await freshAdminClient.request("GET", "/roles")).status, 200);
+      const globalIdentities = await freshAdminClient.request(
+        "GET", `/users?q=${encodeURIComponent(search)}`,
+      );
+      assert.equal(globalIdentities.status, 200);
+      const userIds = (rows) => rows.map((row) => String(row.id || row._id)).sort();
+      assert.deepEqual(
+        userIds(globalIdentities.body.users),
+        userIds(visibleIdentities),
+        "the new administrator session must see matching identities across departments",
+      );
+
+      const event = await AuditLog.findOne({
+        eventType: "ROLE_MODIFIED",
+        "metadata.targetUserId": String(promotedUser._id),
+      }).sort({ createdAt: -1, _id: -1 }).lean();
+      assert.ok(event);
+      assert.equal(String(event.userId), String(admin._id));
+      assert.equal(event.userName, admin.name);
+      assert.equal(event.role, "ADMIN");
+      assert.equal(event.metadata.targetUserId, String(promotedUser._id));
+      assert.equal(event.metadata.role, "ADMIN");
+      assert.ok(event.description.includes("role from MANAGER to ADMIN"));
+
+      const auditApi = await adminClient.request(
+        "GET",
+        `/audit-logs?eventType=ROLE_MODIFIED&userId=${admin._id}&from=${encodeURIComponent(event.createdAt.toISOString())}`,
+      );
+      assert.equal(auditApi.status, 200);
+      const row = auditApi.body.logs.find((item) => String(item.id) === String(event._id));
+      assert.ok(row);
+      assert.equal(String(row.userId), String(admin._id));
+      assert.equal(row.metadata.targetUserId, String(promotedUser._id));
+      assert.equal(row.metadata.role, "ADMIN");
     });
 
     await t.test("identity pages and filtered totals always intersect the manager's scope", async () => {
