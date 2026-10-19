@@ -27,7 +27,8 @@ test("browser sign-in, MFA enrollment, and pending-device approval", {
   process.env.COOKIE_SECURE = "false";
   if (!process.env.SESSION_SECRET) process.env.SESSION_SECRET = crypto.randomBytes(40).toString("base64url");
 
-  const databaseName = `zerotrust_browser_${Date.now()}_${randomToken(5).replace(/[^a-zA-Z0-9]/g, "")}`;
+  const databaseName = `zt_browser_${Date.now()}_${crypto.randomBytes(5).toString("hex")}`;
+  assert.ok(Buffer.byteLength(databaseName) <= 38, "Atlas test database names must not exceed 38 bytes.");
   let apiServer;
   let viteServer;
   let browser;
@@ -176,8 +177,9 @@ test("browser sign-in, MFA enrollment, and pending-device approval", {
     if (browser) await browser.close();
     if (viteServer) await viteServer.close();
     if (apiServer?.listening) await new Promise((resolve) => apiServer.close(resolve));
-    if (databaseConnected) {
-      await mongoose.connection.dropDatabase();
+    try {
+      if (databaseConnected) await mongoose.connection.dropDatabase();
+    } finally {
       await mongoose.disconnect();
     }
   }

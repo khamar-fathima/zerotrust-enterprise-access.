@@ -1,10 +1,10 @@
 ---
-name: Browser verification scheduling
-description: Conservative scheduling for live browser acceptance and screenshot capture.
+name: Atlas test database limits
+description: Environment-specific database-name limits and reliable teardown for isolated tests.
 ---
 
-Run live browser acceptance tests separately from screenshot capture in this workspace.
+Keep disposable database names within 38 bytes in this Atlas environment, including the longest possible random suffix.
 
-**Why:** A concurrent browser-test/capture run failed early and stalled; the same browser flow passed when run alone. Contention was not conclusively diagnosed, so serialization is a conservative operational choice.
+**Why:** Atlas rejected a 39-byte test database name. A variable-length sanitized random suffix made the failure intermittent. Cleanup then attempted to drop that invalid database and skipped disconnecting, leaving the test process running. Earlier suspicion of browser/screenshot contention was not the actual diagnosis.
 
-**How to apply:** Finish the browser acceptance command before starting a screenshot capture, or vice versa. Do not interpret this as evidence of an application authentication defect.
+**How to apply:** Use short prefixes and fixed-length suffixes for test databases. Enforce the maximum before connecting and disconnect in a finally block even if dropping the test database fails. Do not replace the uniquely named test database with the application's database.
