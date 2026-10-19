@@ -1088,6 +1088,43 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       assert.equal(defaults.body.total, await User.countDocuments());
     });
 
+    await t.test("rejecting a nonexistent destination department leaves no successful update audit", async () => {
+      const target = await makeUser("EMPLOYEE", {
+        name: "Rejected department transfer target",
+      });
+      const missingDepartmentId = new mongoose.Types.ObjectId().toString();
+      assert.equal(await Department.exists({ _id: missingDepartmentId }), null);
+
+      const auditSince = new Date();
+      const update = await adminClient.request("PATCH", `/users/${target._id}`, {
+        departmentId: missingDepartmentId,
+      });
+      assert.equal(update.status, 400);
+      assert.equal(update.body.error, "Choose a valid department.");
+
+      const savedTarget = await User.findById(target._id).lean();
+      assert.equal(String(savedTarget.departmentId), String(department._id));
+
+      const auditUrl = (page) =>
+        `/audit-logs?userId=${admin._id}&from=${encodeURIComponent(auditSince.toISOString())}&limit=100&page=${page}`;
+      const auditApi = await adminClient.request(
+        "GET",
+        auditUrl(1),
+      );
+      assert.equal(auditApi.status, 200);
+      const logs = [...auditApi.body.logs];
+      for (let page = 2; page <= auditApi.body.totalPages; page++) {
+        const nextPage = await adminClient.request("GET", auditUrl(page));
+        assert.equal(nextPage.status, 200);
+        logs.push(...nextPage.body.logs);
+      }
+      assert.equal(
+        logs.some((log) => log.metadata?.targetUserId === String(target._id)),
+        false,
+        "the administrator audit API must not show any successful update record for the rejected transfer",
+      );
+    });
+
     await t.test("9. Role change immediately invalidates existing authorization", async () => {
       assert.equal((await adminClient.request("PATCH", `/users/${manager._id}`, { role: "EMPLOYEE" })).status, 200);
       assert.equal((await User.findById(manager._id)).role, "EMPLOYEE");
