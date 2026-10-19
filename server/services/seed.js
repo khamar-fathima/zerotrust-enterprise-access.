@@ -43,7 +43,7 @@ export async function seedBaseData() {
   }
   const departmentDocs = await Promise.all(
     ["Engineering", "Operations", "People"].map((name) =>
-      Department.findOneAndUpdate({ name }, { $setOnInsert: { name, description: `${name} department` } }, { upsert: true, new: true }),
+      Department.findOneAndUpdate({ name }, { $setOnInsert: { name, description: `${name} department` } }, { upsert: true, returnDocument: "after" }),
     ),
   );
   const engineering = departmentDocs.find((dept) => dept.name === "Engineering");

@@ -70,7 +70,7 @@ router.post("/resources", requireAuth, requireRole("ADMIN"), async (req, res, ne
 router.patch("/resources/:id", requireAuth, requireRole("ADMIN"), async (req, res, next) => {
   try {
     const input = resourceSchema.partial().refine((value) => Object.keys(value).length > 0).parse(req.body);
-    const resource = await Resource.findByIdAndUpdate(req.params.id, { $set: input }, { new: true, runValidators: true }).populate("departmentId", "name");
+    const resource = await Resource.findByIdAndUpdate(req.params.id, { $set: input }, { returnDocument: "after", runValidators: true }).populate("departmentId", "name");
     if (!resource) return res.status(404).json({ error: "Resource not found." });
     await writeAudit(req, {
       eventType: "RESOURCE_UPDATED",
