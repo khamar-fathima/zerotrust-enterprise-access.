@@ -515,7 +515,10 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       });
 
       await t.test("both administrator department changes are recorded in the audit trail", async () => {
-        for (const target of [transferredManager, transferredEmployee]) {
+        for (const [target, destinationDepartment] of [
+          [transferredManager, newDepartment],
+          [transferredEmployee, newDepartment],
+        ]) {
           const event = await AuditLog.findOne({
             eventType: "USER_UPDATED",
             userId: admin._id,
@@ -524,11 +527,41 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
           assert.ok(event, `department update for ${target.role.toLowerCase()} must be audited`);
           assert.equal(event.role, "ADMIN");
           assert.equal(event.status, "SUCCESS");
-          const auditApi = await adminClient.request("GET", `/audit-logs?eventType=USER_UPDATED&userId=${admin._id}`);
+          assert.deepEqual({
+            oldDepartmentId: event.metadata.oldDepartmentId,
+            oldDepartmentName: event.metadata.oldDepartmentName,
+            newDepartmentId: event.metadata.newDepartmentId,
+            newDepartmentName: event.metadata.newDepartmentName,
+          }, {
+            oldDepartmentId: String(formerDepartment._id),
+            oldDepartmentName: formerDepartment.name,
+            newDepartmentId: String(destinationDepartment._id),
+            newDepartmentName: destinationDepartment.name,
+          });
+
+          const auditApi = await adminClient.request("GET",
+            `/audit-logs?eventType=USER_UPDATED&userId=${admin._id}&from=${encodeURIComponent(event.createdAt.toISOString())}`);
           assert.equal(auditApi.status, 200);
-          assert.ok(auditApi.body.logs.some((row) =>
-            String(row.userId) === String(admin._id) &&
-            row.metadata.targetUserId === String(target._id)));
+          const row = auditApi.body.logs.find((item) => String(item.id) === String(event._id));
+          assert.ok(row, "the department change must be available through the administrator audit API");
+          assert.deepEqual({
+            oldDepartmentId: row.metadata.oldDepartmentId,
+            oldDepartmentName: row.metadata.oldDepartmentName,
+            newDepartmentId: row.metadata.newDepartmentId,
+            newDepartmentName: row.metadata.newDepartmentName,
+          }, {
+            oldDepartmentId: String(formerDepartment._id),
+            oldDepartmentName: formerDepartment.name,
+            newDepartmentId: String(destinationDepartment._id),
+            newDepartmentName: destinationDepartment.name,
+          });
+          assert.equal(row.metadata.targetUserId, String(target._id));
+          assert.ok(row.description.includes(`Department changed from ${formerDepartment.name} to ${destinationDepartment.name}.`));
+          for (const field of ["passwordHash", "mfaSecretEncrypted", "recoveryCodeHashes", "email"]) {
+            assert.equal(Object.hasOwn(row.metadata, field), false, `${field} must not appear in transfer audit metadata`);
+          }
+          assert.equal(row.user, undefined);
+          assert.equal(JSON.stringify(row).includes(target.email), false, "the audit API must not include the transferred user's email");
         }
       });
     });

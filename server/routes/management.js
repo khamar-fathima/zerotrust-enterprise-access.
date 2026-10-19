@@ -117,7 +117,7 @@ router.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req, res, n
       status: z.enum(["ACTIVE", "DISABLED"]).optional(),
       departmentId: z.string().nullable().optional(),
     }).refine((value) => Object.keys(value).length > 0).parse(req.body);
-    const target = await User.findById(req.params.id);
+    const target = await User.findById(req.params.id).populate("departmentId", "name");
     if (!target) return res.status(404).json({ error: "User not found." });
     if (target._id.equals(req.user._id) && (input.role && input.role !== "ADMIN" || input.status === "DISABLED")) {
       const activeAdmins = await User.countDocuments({ role: "ADMIN", status: "ACTIVE" });
@@ -128,6 +128,19 @@ router.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req, res, n
     }
     const beforeRole = target.role;
     const beforeStatus = target.status;
+    const previousDepartment = target.departmentId;
+    const oldDepartmentId = previousDepartment
+      ? String(previousDepartment._id || previousDepartment)
+      : null;
+    const requestedDepartmentId = input.departmentId == null ? null : String(input.departmentId);
+    const departmentChanged = Object.hasOwn(input, "departmentId") && requestedDepartmentId !== oldDepartmentId;
+    let newDepartment = null;
+    if (departmentChanged && requestedDepartmentId) {
+      newDepartment = await Department.findById(requestedDepartmentId).select("name").lean();
+      if (!newDepartment) return res.status(400).json({ error: "Choose a valid department." });
+    }
+    const oldDepartmentName = previousDepartment?.name || null;
+    const newDepartmentName = newDepartment?.name || null;
     Object.assign(target, input);
     await target.save();
     if (input.role || input.status === "DISABLED") {
@@ -138,14 +151,30 @@ router.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req, res, n
     const eventType = input.role && input.role !== beforeRole ? "ROLE_MODIFIED" : input.status && input.status !== beforeStatus ? "ACCOUNT_STATUS_CHANGED" : "USER_UPDATED";
     await writeAudit(req, {
       eventType,
-      description: input.role && input.role !== beforeRole
-        ? `Administrator changed a user's role from ${beforeRole} to ${input.role}.`
-        : input.status && input.status !== beforeStatus
+      description: [
+        input.role && input.role !== beforeRole
+          ? `Administrator changed a user's role from ${beforeRole} to ${input.role}.`
+          : null,
+        input.status && input.status !== beforeStatus
           ? `Administrator changed a user's status to ${input.status}.`
-          : "Administrator updated a user profile.",
+          : null,
+        departmentChanged
+          ? `Department changed from ${oldDepartmentName || "Unassigned"} to ${newDepartmentName || "Unassigned"}.`
+          : null,
+      ].filter(Boolean).join(" ") || "Administrator updated a user profile.",
       user: req.user,
       status: input.status === "DISABLED" ? "WARNING" : "SUCCESS",
-      metadata: { targetUserId: target._id.toString(), role: target.role, status: target.status },
+      metadata: {
+        targetUserId: target._id.toString(),
+        role: target.role,
+        status: target.status,
+        ...(departmentChanged ? {
+          oldDepartmentId,
+          oldDepartmentName,
+          newDepartmentId: newDepartment?._id?.toString() || null,
+          newDepartmentName,
+        } : {}),
+      },
     });
     res.json({ user: safeUser(target) });
   } catch (error) { next(error); }
