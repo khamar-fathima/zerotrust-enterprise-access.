@@ -1023,6 +1023,82 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       assert.ok(await AuditLog.exists({ userId: employee._id, eventType: "UNAUTHORIZED_PORTAL_ACCESS" }));
     });
 
+    await t.test("disabling and transferring an employee revokes access and records the administrator action", async () => {
+      assert.equal((await pendingClient.request("GET", "/auth/me")).status, 200);
+      const oldSession = await Session.findOne({
+        userId: employee._id,
+        status: "ACTIVE",
+      }).sort({ createdAt: -1 });
+      assert.ok(oldSession, "the employee must have an active session before the combined update");
+
+      const destinationDepartment = await Department.create({
+        name: "Disabled employee destination",
+      });
+      const update = await adminClient.request("PATCH", `/users/${employee._id}`, {
+        status: "DISABLED",
+        departmentId: String(destinationDepartment._id),
+      });
+      assert.equal(update.status, 200);
+      assert.equal(update.body.user.status, "DISABLED");
+      assert.equal(String(update.body.user.departmentId), String(destinationDepartment._id));
+
+      const savedEmployee = await User.findById(employee._id);
+      assert.equal(savedEmployee.status, "DISABLED");
+      assert.equal(String(savedEmployee.departmentId), String(destinationDepartment._id));
+      const revokedSession = await Session.findById(oldSession._id);
+      assert.equal(revokedSession.status, "REVOKED");
+      assert.equal(revokedSession.revokeReason, "Account role or status changed");
+
+      const followUpAccess = await pendingClient.request("GET", "/profile");
+      assert.equal(followUpAccess.status, 401);
+      assert.equal(followUpAccess.body.code, "SESSION_REVOKED");
+
+      const event = await AuditLog.findOne({
+        eventType: "ACCOUNT_STATUS_CHANGED",
+        "metadata.targetUserId": String(employee._id),
+      }).sort({ createdAt: -1, _id: -1 }).lean();
+      assert.ok(event, "the combined disable and transfer must be audited");
+      assert.equal(String(event.userId), String(admin._id));
+      assert.equal(event.userName, admin.name);
+      assert.equal(event.role, "ADMIN");
+      assert.equal(event.status, "WARNING");
+      assert.deepEqual({
+        targetUserId: event.metadata.targetUserId,
+        role: event.metadata.role,
+        status: event.metadata.status,
+        oldDepartmentId: event.metadata.oldDepartmentId,
+        oldDepartmentName: event.metadata.oldDepartmentName,
+        newDepartmentId: event.metadata.newDepartmentId,
+        newDepartmentName: event.metadata.newDepartmentName,
+      }, {
+        targetUserId: String(employee._id),
+        role: "EMPLOYEE",
+        status: "DISABLED",
+        oldDepartmentId: String(department._id),
+        oldDepartmentName: department.name,
+        newDepartmentId: String(destinationDepartment._id),
+        newDepartmentName: destinationDepartment.name,
+      });
+
+      const auditApi = await adminClient.request(
+        "GET",
+        `/audit-logs?eventType=ACCOUNT_STATUS_CHANGED&userId=${admin._id}&from=${encodeURIComponent(event.createdAt.toISOString())}`,
+      );
+      assert.equal(auditApi.status, 200);
+      const row = auditApi.body.logs.find((item) => String(item.id) === String(event._id));
+      assert.ok(row);
+      assert.equal(String(row.userId), String(admin._id));
+      assert.equal(row.status, "WARNING");
+      assert.equal(row.metadata.status, "DISABLED");
+      assert.equal(row.metadata.targetUserId, String(employee._id));
+      assert.equal(row.metadata.oldDepartmentName, department.name);
+      assert.equal(row.metadata.newDepartmentName, destinationDepartment.name);
+      assert.ok(row.description.includes("status to DISABLED"));
+      assert.ok(row.description.includes(
+        `Department changed from ${department.name} to ${destinationDepartment.name}.`,
+      ));
+    });
+
     await t.test("Cookie-authenticated writes require a CSRF token", async () => {
       const response = await client().request("POST", "/auth/login", { portal: "admin", email: admin.email, password });
       assert.equal(response.status, 403);
