@@ -1158,6 +1158,40 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       );
     });
 
+    await t.test("disabling an employee without a department change is not audited as a transfer", async () => {
+      const target = await makeUser("EMPLOYEE", {
+        name: "Status-only audit target",
+      });
+      const originalDepartmentId = String(target.departmentId);
+      const update = await adminClient.request("PATCH", `/users/${target._id}`, {
+        status: "DISABLED",
+      });
+      assert.equal(update.status, 200);
+      assert.equal(update.body.user.status, "DISABLED");
+      assert.equal(String(update.body.user.departmentId), originalDepartmentId);
+
+      const event = await AuditLog.findOne({
+        eventType: "ACCOUNT_STATUS_CHANGED",
+        "metadata.targetUserId": String(target._id),
+      }).sort({ createdAt: -1, _id: -1 }).lean();
+      assert.ok(event, "the status-only update must be audited");
+      assert.equal(String(event.userId), String(admin._id));
+      assert.equal(event.userName, admin.name);
+      assert.equal(event.role, "ADMIN");
+      assert.equal(event.status, "WARNING");
+      assert.equal(event.metadata.status, "DISABLED");
+      assert.equal(event.metadata.targetUserId, String(target._id));
+      for (const field of [
+        "oldDepartmentId",
+        "oldDepartmentName",
+        "newDepartmentId",
+        "newDepartmentName",
+      ]) {
+        assert.equal(Object.hasOwn(event.metadata, field), false, `${field} must not appear in status-only audit metadata`);
+      }
+      assert.doesNotMatch(event.description, /department changed|transfer/i);
+    });
+
     await t.test("9. Role change immediately invalidates existing authorization", async () => {
       assert.equal((await adminClient.request("PATCH", `/users/${manager._id}`, { role: "EMPLOYEE" })).status, 200);
       assert.equal((await User.findById(manager._id)).role, "EMPLOYEE");
