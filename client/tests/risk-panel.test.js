@@ -17,6 +17,10 @@ test("risk panel uses explicit AI requests, preserves scores on failure, and hid
     browser = await chromium.launch({ executablePath, headless: true, args: ["--no-sandbox"] });
     const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
     page.setDefaultTimeout(15_000);
+    const browserErrors = [];
+    page.on("pageerror", (error) => browserErrors.push(error.message));
+    page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
+    page.on("requestfailed", (request) => browserErrors.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText || "failed"}`));
     let bootstrap = true;
     let analysisRequests = 0;
     let failAnalysis = false;
@@ -61,7 +65,13 @@ test("risk panel uses explicit AI requests, preserves scores on failure, and hid
     });
     await page.goto(`http://127.0.0.1:${vite.httpServer.address().port}/admin/dashboard`, { timeout: 60_000 });
     t.diagnostic("Dashboard navigation completed.");
-    await page.getByRole("heading", { name: "Identity risk review" }).waitFor();
+    try {
+      await page.getByRole("heading", { name: "Identity risk review" }).waitFor();
+    } catch (error) {
+      t.diagnostic(`Rendered page text: ${(await page.locator("body").innerText()).slice(0, 1800)}`);
+      t.diagnostic(`Browser errors: ${browserErrors.join(" | ") || "none"}`);
+      throw error;
+    }
     await page.locator(".risk-score__inner strong").waitFor();
     assert.equal(await page.locator(".risk-score__inner strong").innerText(), "43");
     t.diagnostic("Risk snapshot rendered.");
