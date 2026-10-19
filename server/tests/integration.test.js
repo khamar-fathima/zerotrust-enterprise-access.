@@ -625,6 +625,120 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
         await assertManagerSummary(destinationManagerClient, newDepartment, 2);
       });
 
+      await t.test("a combined role and department update revokes the old session and applies destination manager access", async () => {
+        const combinedTransferUser = await makeUser("EMPLOYEE", {
+          departmentId: formerDepartment._id,
+          name: "Combined transfer employee",
+        });
+        const combinedTransferClient = await knownClient(combinedTransferUser);
+        const initialLogin = await signIn(combinedTransferClient, combinedTransferUser);
+        assert.equal(initialLogin.status, 200);
+        assert.equal(initialLogin.body.authenticated, true);
+        const oldSession = await Session.findOne({
+          userId: combinedTransferUser._id, status: "ACTIVE",
+        }).sort({ createdAt: -1 });
+        assert.ok(oldSession, "the employee must have an active session before the combined update");
+
+        const update = await adminClient.request("PATCH", `/users/${combinedTransferUser._id}`, {
+          role: "MANAGER",
+          departmentId: String(newDepartment._id),
+        });
+        assert.equal(update.status, 200);
+        assert.equal(update.body.user.role, "MANAGER");
+        assert.equal(String(update.body.user.departmentId), String(newDepartment._id));
+
+        const revokedSession = await Session.findById(oldSession._id);
+        assert.equal(revokedSession.status, "REVOKED");
+        assert.equal(revokedSession.revokeReason, "Account role or status changed");
+        const oldSessionIdentity = await combinedTransferClient.request("GET", "/auth/me");
+        assert.equal(oldSessionIdentity.status, 401);
+        assert.equal(oldSessionIdentity.body.code, "SESSION_REVOKED");
+        const oldSessionRoles = await combinedTransferClient.request("GET", "/roles");
+        assert.equal(oldSessionRoles.status, 401);
+        assert.equal(oldSessionRoles.body.code, "SESSION_REVOKED");
+
+        const newManagerClient = await knownClient(combinedTransferUser);
+        const newLogin = await signIn(newManagerClient, combinedTransferUser, "manager");
+        assert.equal(newLogin.status, 200);
+        assert.equal(newLogin.body.authenticated, true);
+        const newSession = await Session.findOne({
+          userId: combinedTransferUser._id, status: "ACTIVE",
+        }).sort({ createdAt: -1 });
+        assert.ok(newSession);
+        assert.notEqual(String(newSession._id), String(oldSession._id));
+
+        const identity = await newManagerClient.request("GET", "/auth/me");
+        assert.equal(identity.status, 200);
+        assert.equal(identity.body.user.role, "MANAGER");
+        assert.equal(identity.body.user.departmentName, newDepartment.name);
+        const ownIdentity = await newManagerClient.request("GET", `/users/${combinedTransferUser._id}`);
+        assert.equal(ownIdentity.status, 200);
+        assert.equal(ownIdentity.body.user.role, "MANAGER");
+        assert.equal(String(ownIdentity.body.user.departmentId), String(newDepartment._id));
+
+        const visibleEmployees = await newManagerClient.request("GET", "/users");
+        assert.equal(visibleEmployees.status, 200);
+        assert.deepEqual(ids(visibleEmployees.body.users), ids([transferredEmployee, destinationEmployee]));
+        assert.equal((await newManagerClient.request("GET", `/users/${destinationEmployee._id}`)).status, 200);
+        assert.equal((await newManagerClient.request("GET", `/users/${sourceEmployee._id}`)).status, 403);
+        assert.equal((await sourceManagerClient.request("GET", `/users/${combinedTransferUser._id}`)).status, 403);
+
+        const managerResources = await newManagerClient.request("GET", "/resources");
+        assert.equal(managerResources.status, 200);
+        assert.deepEqual(ids(managerResources.body.resources), ids([
+          destinationManagerResource, ...sharedManagerResources,
+        ]));
+        assert.equal((await newManagerClient.request(
+          "GET", `/resources/${destinationManagerResource._id}/content`,
+        )).status, 200);
+        assert.equal((await newManagerClient.request(
+          "GET", `/resources/${destinationEmployeeResource._id}/content`,
+        )).status, 403);
+        assert.equal((await newManagerClient.request(
+          "GET", `/resources/${sourceManagerResource._id}/content`,
+        )).status, 403);
+
+        const event = await AuditLog.findOne({
+          eventType: "ROLE_MODIFIED",
+          "metadata.targetUserId": String(combinedTransferUser._id),
+        }).sort({ createdAt: -1, _id: -1 }).lean();
+        assert.ok(event, "the combined role and department update must be audited");
+        assert.equal(String(event.userId), String(admin._id));
+        assert.equal(event.userName, admin.name);
+        assert.equal(event.role, "ADMIN");
+        assert.equal(event.status, "SUCCESS");
+        assert.deepEqual({
+          targetUserId: event.metadata.targetUserId,
+          role: event.metadata.role,
+          oldDepartmentId: event.metadata.oldDepartmentId,
+          oldDepartmentName: event.metadata.oldDepartmentName,
+          newDepartmentId: event.metadata.newDepartmentId,
+          newDepartmentName: event.metadata.newDepartmentName,
+        }, {
+          targetUserId: String(combinedTransferUser._id),
+          role: "MANAGER",
+          oldDepartmentId: String(formerDepartment._id),
+          oldDepartmentName: formerDepartment.name,
+          newDepartmentId: String(newDepartment._id),
+          newDepartmentName: newDepartment.name,
+        });
+        assert.ok(event.description.includes("role from EMPLOYEE to MANAGER"));
+        assert.ok(event.description.includes(
+          `Department changed from ${formerDepartment.name} to ${newDepartment.name}.`,
+        ));
+
+        const auditApi = await adminClient.request("GET",
+          `/audit-logs?eventType=ROLE_MODIFIED&userId=${admin._id}&from=${encodeURIComponent(event.createdAt.toISOString())}`);
+        assert.equal(auditApi.status, 200);
+        const row = auditApi.body.logs.find((item) => String(item.id) === String(event._id));
+        assert.ok(row, "the combined update must be visible through the administrator audit API");
+        assert.equal(String(row.userId), String(admin._id));
+        assert.equal(row.role, "ADMIN");
+        assert.equal(row.metadata.targetUserId, String(combinedTransferUser._id));
+        assert.equal(row.metadata.oldDepartmentId, String(formerDepartment._id));
+        assert.equal(row.metadata.newDepartmentId, String(newDepartment._id));
+      });
+
       await t.test("both administrator department changes are recorded in the audit trail", async () => {
         for (const [target, destinationDepartment] of [
           [transferredManager, newDepartment],
