@@ -1,0 +1,348 @@
+import { Router } from "express";
+import bcrypt from "bcryptjs";
+import { z } from "zod";
+import { Department, Device, AuditLog, Role, Session, User } from "../models/index.js";
+import { writeAudit } from "../lib/audit.js";
+import { cookieOptions, hashToken, requestContext } from "../lib/security.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+
+const router = Router();
+const safeUser = (user) => ({
+  id: user._id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+  status: user.status,
+  departmentId: user.departmentId?._id || user.departmentId || null,
+  departmentName: user.departmentId?.name || "",
+  mfaEnabled: user.mfaEnabled,
+  createdAt: user.createdAt,
+  lastLoginAt: user.lastLoginAt,
+});
+
+function cleanText(value, max = 120) {
+  return String(value || "").trim().slice(0, max);
+}
+
+router.get("/users", requireAuth, async (req, res, next) => {
+  try {
+    if (req.user.role === "ADMIN") {
+      const filters = {};
+      if (req.query.status && ["PENDING", "ACTIVE", "DISABLED", "REJECTED"].includes(req.query.status)) filters.status = req.query.status;
+      if (req.query.role && ["ADMIN", "MANAGER", "EMPLOYEE"].includes(req.query.role)) filters.role = req.query.role;
+      if (req.query.departmentId) filters.departmentId = req.query.departmentId;
+      if (req.query.q) {
+        const q = String(req.query.q).slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        filters.$or = [{ name: { $regex: q, $options: "i" } }, { email: { $regex: q, $options: "i" } }];
+      }
+      const users = await User.find(filters).populate("departmentId", "name").sort({ createdAt: -1 }).limit(250);
+      return res.json({ users: users.map(safeUser), total: users.length });
+    }
+    if (req.user.role === "MANAGER") {
+      if (!req.user.departmentId) return res.json({ users: [], total: 0 });
+      const users = await User.find({
+        departmentId: req.user.departmentId?._id || req.user.departmentId,
+        role: "EMPLOYEE",
+        status: "ACTIVE",
+      }).populate("departmentId", "name").sort({ name: 1 }).limit(200);
+      return res.json({ users: users.map(safeUser), total: users.length });
+    }
+    return res.status(403).json({ error: "You cannot view other users.", code: "FORBIDDEN" });
+  } catch (error) { next(error); }
+});
+
+router.get("/users/:id", requireAuth, async (req, res, next) => {
+  try {
+    const target = await User.findById(req.params.id).populate("departmentId", "name");
+    if (!target) return res.status(404).json({ error: "User not found." });
+    const ownRecord = target._id.equals(req.user._id);
+    const sameDepartment = req.user.departmentId && target.departmentId &&
+      String(req.user.departmentId._id || req.user.departmentId) === String(target.departmentId._id || target.departmentId);
+    const allowed = req.user.role === "ADMIN" || ownRecord || (req.user.role === "MANAGER" && sameDepartment && target.role === "EMPLOYEE");
+    if (!allowed) {
+      await writeAudit(req, { eventType: "UNAUTHORIZED_USER_ACCESS", description: "A user attempted to retrieve a private identity outside their scope.", status: "CRITICAL", user: req.user, metadata: { targetUserId: target._id.toString() } });
+      return res.status(403).json({ error: "You cannot view this user's private information.", code: "FORBIDDEN" });
+    }
+    res.json({ user: safeUser(target) });
+  } catch (error) { next(error); }
+});
+
+router.post("/users", requireAuth, requireRole("ADMIN"), async (req, res, next) => {
+  try {
+    const input = z.object({
+      name: z.string().trim().min(2).max(100),
+      email: z.string().email().max(254),
+      role: z.enum(["MANAGER", "EMPLOYEE"]),
+      departmentId: z.string().min(1),
+      temporaryPassword: z.string().min(12).max(128).regex(/[a-z]/).regex(/[A-Z]/).regex(/\d/),
+    }).parse(req.body);
+    const email = input.email.toLowerCase();
+    if (await User.exists({ email })) return res.status(409).json({ error: "An account with that email already exists." });
+    if (!(await Department.exists({ _id: input.departmentId }))) return res.status(400).json({ error: "Choose a valid department." });
+    const user = await User.create({
+      name: input.name,
+      email,
+      role: input.role,
+      departmentId: input.departmentId,
+      status: "ACTIVE",
+      passwordHash: await bcrypt.hash(input.temporaryPassword, 12),
+      forcePasswordChange: true,
+    });
+    await writeAudit(req, {
+      eventType: "USER_CREATED",
+      description: `Administrator created a ${input.role.toLowerCase()} account.`,
+      user: req.user,
+      metadata: { targetUserId: user._id.toString(), targetRole: user.role },
+    });
+    res.status(201).json({ user: safeUser(user), message: "Account created. The user must change the temporary password and enroll MFA." });
+  } catch (error) { next(error); }
+});
+
+router.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req, res, next) => {
+  try {
+    const input = z.object({
+      name: z.string().trim().min(2).max(100).optional(),
+      role: z.enum(["ADMIN", "MANAGER", "EMPLOYEE"]).optional(),
+      status: z.enum(["ACTIVE", "DISABLED"]).optional(),
+      departmentId: z.string().nullable().optional(),
+    }).refine((value) => Object.keys(value).length > 0).parse(req.body);
+    const target = await User.findById(req.params.id);
+    if (!target) return res.status(404).json({ error: "User not found." });
+    if (target._id.equals(req.user._id) && (input.role && input.role !== "ADMIN" || input.status === "DISABLED")) {
+      const activeAdmins = await User.countDocuments({ role: "ADMIN", status: "ACTIVE" });
+      if (activeAdmins <= 1) return res.status(409).json({ error: "You cannot remove the only active administrator." });
+    }
+    if (input.departmentId && !(await Department.exists({ _id: input.departmentId }))) {
+      return res.status(400).json({ error: "Choose a valid department." });
+    }
+    const beforeRole = target.role;
+    const beforeStatus = target.status;
+    Object.assign(target, input);
+    await target.save();
+    if (input.role || input.status === "DISABLED") {
+      await Session.updateMany({ userId: target._id, status: "ACTIVE" }, {
+        $set: { status: "REVOKED", revokedAt: new Date(), revokeReason: "Account role or status changed" },
+      });
+    }
+    const eventType = input.role && input.role !== beforeRole ? "ROLE_MODIFIED" : input.status && input.status !== beforeStatus ? "ACCOUNT_STATUS_CHANGED" : "USER_UPDATED";
+    await writeAudit(req, {
+      eventType,
+      description: input.role && input.role !== beforeRole
+        ? `Administrator changed a user's role from ${beforeRole} to ${input.role}.`
+        : input.status && input.status !== beforeStatus
+          ? `Administrator changed a user's status to ${input.status}.`
+          : "Administrator updated a user profile.",
+      user: req.user,
+      status: input.status === "DISABLED" ? "WARNING" : "SUCCESS",
+      metadata: { targetUserId: target._id.toString(), role: target.role, status: target.status },
+    });
+    res.json({ user: safeUser(target) });
+  } catch (error) { next(error); }
+});
+
+router.post("/users/:id/review", requireAuth, requireRole("ADMIN"), async (req, res, next) => {
+  try {
+    const { decision } = z.object({ decision: z.enum(["APPROVE", "REJECT"]) }).parse(req.body);
+    const user = await User.findById(req.params.id);
+    if (!user || user.status !== "PENDING" || user.role !== "EMPLOYEE") {
+      return res.status(404).json({ error: "Pending employee request not found." });
+    }
+    user.status = decision === "APPROVE" ? "ACTIVE" : "REJECTED";
+    await user.save();
+    await writeAudit(req, {
+      eventType: decision === "APPROVE" ? "REGISTRATION_APPROVED" : "REGISTRATION_REJECTED",
+      description: `Administrator ${decision.toLowerCase()}d an employee registration request.`,
+      user: req.user,
+      status: decision === "REJECT" ? "WARNING" : "SUCCESS",
+      metadata: { targetUserId: user._id.toString() },
+    });
+    res.json({ user: safeUser(user), message: `Registration ${decision.toLowerCase()}d.` });
+  } catch (error) { next(error); }
+});
+
+router.get("/roles", requireAuth, requireRole("ADMIN"), async (req, res, next) => {
+  try {
+    const roles = await Role.find().sort({ key: 1 }).lean();
+    res.json({ roles });
+  } catch (error) { next(error); }
+});
+
+router.get("/departments", requireAuth, async (req, res, next) => {
+  try {
+    const departments = req.user.role === "ADMIN"
+      ? await Department.find().sort({ name: 1 }).lean()
+      : await Department.find({ _id: req.user.departmentId?._id || req.user.departmentId }).sort({ name: 1 }).lean();
+    res.json({ departments });
+  } catch (error) { next(error); }
+});
+
+router.get("/devices", requireAuth, async (req, res, next) => {
+  try {
+    const filters = {};
+    if (req.user.role !== "ADMIN") filters.userId = req.user._id;
+    if (req.query.status && ["PENDING", "APPROVED", "REVOKED"].includes(req.query.status)) filters.status = req.query.status;
+    const devices = await Device.find(filters).populate("userId", "name email role departmentId").sort({ createdAt: -1 }).limit(300);
+    res.json({
+      devices: devices.map((device) => ({
+        id: device._id,
+        userId: device.userId?._id,
+        userName: device.userId?.name || "",
+        userEmail: device.userId?.email || "",
+        role: device.userId?.role || "",
+        name: device.name,
+        browser: device.browser,
+        operatingSystem: device.operatingSystem,
+        status: device.status,
+        createdAt: device.createdAt,
+        lastActivity: device.lastActivity,
+        ipAddress: req.user.role === "ADMIN" ? device.ipAddress : undefined,
+        current: device._id.equals(req.device._id),
+      })),
+      total: devices.length,
+    });
+  } catch (error) { next(error); }
+});
+
+router.patch("/devices/:id", requireAuth, async (req, res, next) => {
+  try {
+    const { status } = z.object({ status: z.enum(["APPROVED", "REVOKED"]) }).parse(req.body);
+    const device = await Device.findById(req.params.id);
+    if (!device) return res.status(404).json({ error: "Device not found." });
+    if (req.user.role !== "ADMIN" && (!device.userId.equals(req.user._id) || status !== "REVOKED")) {
+      await writeAudit(req, { eventType: "UNAUTHORIZED_ACCESS", description: "A user attempted to manage a device outside their permissions.", status: "CRITICAL", user: req.user, metadata: { deviceId: device._id.toString() } });
+      return res.status(403).json({ error: "Only administrators can approve devices. You may revoke your own devices.", code: "FORBIDDEN" });
+    }
+    device.status = status;
+    device.approvedAt = status === "APPROVED" ? new Date() : null;
+    device.approvedBy = status === "APPROVED" ? req.user._id : null;
+    await device.save();
+    if (status === "REVOKED") {
+      await Session.updateMany({ deviceId: device._id, status: "ACTIVE" }, {
+        $set: { status: "REVOKED", revokedAt: new Date(), revokeReason: "Device revoked by administrator" },
+      });
+    }
+    const targetUser = await User.findById(device.userId);
+    await writeAudit(req, {
+      eventType: status === "APPROVED" ? "DEVICE_APPROVED" : "DEVICE_REVOKED",
+      description: `${req.user.role === "ADMIN" ? "Administrator" : "User"} ${status === "APPROVED" ? "approved" : "revoked"} a registered device.`,
+      user: req.user,
+      status: status === "REVOKED" ? "WARNING" : "SUCCESS",
+      metadata: { targetUserId: targetUser?._id.toString(), deviceId: device._id.toString(), deviceName: device.name },
+    });
+    res.json({ device: { id: device._id, status: device.status, name: device.name } });
+  } catch (error) { next(error); }
+});
+
+router.get("/sessions", requireAuth, async (req, res, next) => {
+  try {
+    const filters = {};
+    if (req.user.role !== "ADMIN") filters.userId = req.user._id;
+    if (req.query.status && ["ACTIVE", "EXPIRED", "REVOKED"].includes(req.query.status)) filters.status = req.query.status;
+    if (req.query.userId && req.user.role === "ADMIN") filters.userId = req.query.userId;
+    const sessions = await Session.find(filters)
+      .populate("userId", "name email role")
+      .populate("deviceId", "name status")
+      .sort({ lastActivity: -1 }).limit(300);
+    res.json({
+      sessions: sessions.map((session) => ({
+        id: session._id,
+        userId: session.userId?._id,
+        userName: session.userId?.name || "",
+        userEmail: session.userId?.email || "",
+        role: session.userId?.role || session.roleAtIssue,
+        ipAddress: req.user.role === "ADMIN" ? session.ipAddress : "",
+        browser: session.browser,
+        deviceName: session.deviceId?.name || "Unknown device",
+        deviceStatus: session.deviceId?.status || "REVOKED",
+        status: session.status,
+        createdAt: session.createdAt,
+        lastActivity: session.lastActivity,
+        current: session._id.equals(req.session._id),
+      })),
+      total: sessions.length,
+    });
+  } catch (error) { next(error); }
+});
+
+router.delete("/sessions/:id", requireAuth, async (req, res, next) => {
+  try {
+    const session = await Session.findById(req.params.id);
+    if (!session) return res.status(404).json({ error: "Session not found." });
+    const isAdmin = req.user.role === "ADMIN";
+    if (!isAdmin && !session.userId.equals(req.user._id)) return res.status(403).json({ error: "You can only revoke your own sessions.", code: "FORBIDDEN" });
+    if (session.status !== "ACTIVE") return res.status(409).json({ error: "This session is already inactive." });
+    session.status = "REVOKED";
+    session.revokedAt = new Date();
+    session.revokeReason = isAdmin ? "Terminated by administrator" : "Signed out by user";
+    await session.save();
+    await writeAudit(req, {
+      eventType: "SESSION_TERMINATED",
+      description: isAdmin ? "Administrator terminated an active session." : "User terminated one of their active sessions.",
+      user: req.user,
+      status: "WARNING",
+      metadata: { targetSessionId: session._id.toString(), targetUserId: session.userId.toString() },
+    });
+    if (session._id.equals(req.session._id)) res.clearCookie("zt_session", cookieOptions());
+    res.json({ message: "Session revoked." });
+  } catch (error) { next(error); }
+});
+
+router.post("/sessions/revoke-all", requireAuth, async (req, res, next) => {
+  try {
+    const userId = req.body.userId || req.user._id.toString();
+    if (req.user.role !== "ADMIN" && userId !== req.user._id.toString()) {
+      await writeAudit(req, { eventType: "UNAUTHORIZED_ACCESS", description: "A user attempted to revoke another user's sessions.", status: "CRITICAL", user: req.user });
+      return res.status(403).json({ error: "You can only revoke your own sessions.", code: "FORBIDDEN" });
+    }
+    await Session.updateMany({ userId, status: "ACTIVE" }, { $set: { status: "REVOKED", revokedAt: new Date(), revokeReason: "All sessions revoked" } });
+    await writeAudit(req, { eventType: "SESSIONS_TERMINATED", description: "All active sessions for a user were revoked.", status: "WARNING", user: req.user, metadata: { targetUserId: userId } });
+    if (userId === req.user._id.toString()) res.clearCookie("zt_session", cookieOptions());
+    res.json({ message: "All sessions revoked." });
+  } catch (error) { next(error); }
+});
+
+router.get("/audit-logs", requireAuth, requireRole("ADMIN"), async (req, res, next) => {
+  try {
+    const filters = {};
+    if (req.query.status && ["SUCCESS", "WARNING", "CRITICAL"].includes(req.query.status)) filters.status = req.query.status;
+    if (req.query.eventType) filters.eventType = cleanText(req.query.eventType, 80);
+    if (req.query.userId) filters.userId = req.query.userId;
+    if (req.query.from || req.query.to) {
+      filters.createdAt = {};
+      if (req.query.from && !Number.isNaN(Date.parse(req.query.from))) filters.createdAt.$gte = new Date(req.query.from);
+      if (req.query.to && !Number.isNaN(Date.parse(req.query.to))) filters.createdAt.$lte = new Date(req.query.to);
+    }
+    if (req.query.q) {
+      const q = String(req.query.q).slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      filters.$or = [{ description: { $regex: q, $options: "i" } }, { eventType: { $regex: q, $options: "i" } }, { userName: { $regex: q, $options: "i" } }];
+    }
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 250);
+    const logs = await AuditLog.find(filters).sort({ createdAt: -1 }).limit(limit).lean();
+    res.json({ logs: logs.map((log) => ({ ...log, id: log._id })), total: logs.length });
+  } catch (error) { next(error); }
+});
+
+router.get("/profile", requireAuth, async (req, res) => {
+  res.json({ user: safeUser(req.user) });
+});
+
+router.patch("/profile", requireAuth, async (req, res, next) => {
+  try {
+    const input = z.object({ name: z.string().trim().min(2).max(100) }).parse(req.body);
+    const user = await User.findById(req.user._id);
+    user.name = input.name;
+    await user.save();
+    await writeAudit(req, { eventType: "PROFILE_UPDATED", description: "User updated their profile.", user });
+    res.json({ user: safeUser(user) });
+  } catch (error) { next(error); }
+});
+
+router.get("/profile/login-history", requireAuth, async (req, res, next) => {
+  try {
+    const logs = await AuditLog.find({ userId: req.user._id, eventType: { $in: ["LOGIN_SUCCESS", "LOGIN_FAILED", "PORTAL_ROLE_MISMATCH", "MFA_FAILED"] } })
+      .sort({ createdAt: -1 }).limit(50).lean();
+    res.json({ logs: logs.map((log) => ({ ...log, id: log._id })) });
+  } catch (error) { next(error); }
+});
+
+export default router;

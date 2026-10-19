@@ -1,0 +1,1 @@
+- [Product scope](product-scope.md) — full college-demo IAM scope, priority security demonstration, and non-generic UI constraints.
