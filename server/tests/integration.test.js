@@ -348,24 +348,30 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
         Department.create({ name: "Transfer source department" }),
         Department.create({ name: "Transfer destination department" }),
       ]);
-      const [transferredManager, sourceManager, destinationManager, transferredEmployee, sourceEmployee, destinationEmployee] = await Promise.all([
+      t.after(async () => {
+        await User.updateOne({ _id: manager._id }, { $set: { departmentId: department._id } });
+      });
+      const [transferredManager, sourceManager, transferredEmployee, sourceEmployee, destinationEmployee] = await Promise.all([
         makeUser("MANAGER", { departmentId: formerDepartment._id, name: "Transferred manager" }),
         makeUser("MANAGER", { departmentId: formerDepartment._id, name: "Source manager" }),
-        makeUser("MANAGER", { departmentId: newDepartment._id, name: "Destination manager" }),
         makeUser("EMPLOYEE", { departmentId: formerDepartment._id, name: "Transferred employee" }),
         makeUser("EMPLOYEE", { departmentId: formerDepartment._id, name: "Remaining source employee" }),
         makeUser("EMPLOYEE", { departmentId: newDepartment._id, name: "Destination employee" }),
       ]);
-      const [transferredManagerClient, sourceManagerClient, destinationManagerClient, transferredEmployeeClient] = await Promise.all([
+      const destinationManagerUpdate = await adminClient.request("PATCH", `/users/${manager._id}`, {
+        departmentId: String(newDepartment._id),
+      });
+      assert.equal(destinationManagerUpdate.status, 200);
+      const destinationManager = await User.findById(manager._id);
+      const [transferredManagerClient, sourceManagerClient, transferredEmployeeClient] = await Promise.all([
         knownClient(transferredManager),
         knownClient(sourceManager),
-        knownClient(destinationManager),
         knownClient(transferredEmployee),
       ]);
+      const destinationManagerClient = managerClient;
       for (const [sessionClient, user] of [
         [transferredManagerClient, transferredManager],
         [sourceManagerClient, sourceManager],
-        [destinationManagerClient, destinationManager],
         [transferredEmployeeClient, transferredEmployee],
       ]) {
         const login = await signIn(sessionClient, user);
@@ -388,7 +394,7 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       }).select("_id").lean();
       const sharedEmployeeResources = await Resource.find({
         departmentId: null, active: true, allowedRoles: "EMPLOYEE",
-      }).select("_id").lean();
+      }).lean();
       const assertManagerSummary = async (sessionClient, expectedDepartment, employees) => {
         const summary = await sessionClient.request("GET", "/dashboard/summary");
         assert.equal(summary.status, 200);
