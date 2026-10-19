@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-import { AuditLog, Department, Device, Resource, Session, User } from "../models/index.js";
+import { AuditLog, Department, Device, PreAuth, Resource, Session, User } from "../models/index.js";
 import { encryptSecret, generateTotp, hashToken, newTotpSecret, randomToken } from "../lib/security.js";
 
 const uri = process.env.MONGODB_URI;
@@ -37,14 +37,17 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
   const admin = await makeUser("ADMIN", { isBootstrapAdmin: true });
   const employee = await makeUser("EMPLOYEE");
   const manager = await makeUser("MANAGER");
-    let managerForAdminPromotion;
-    let managerSessionForAdminPromotion;
-    let forwardedForAdminPromotion;
+  let managerForAdminPromotion;
+  let managerSessionForAdminPromotion;
+  let forwardedForAdminPromotion;
   const restricted = await Resource.create({ name: "Admin-only test record", content: "Private test fixture", classification: "RESTRICTED", allowedRoles: ["ADMIN"] });
 
   function client(initialCookies = {}, requestHeaders = {}) {
     const cookies = new Map(Object.entries(initialCookies));
     return {
+      clone() {
+        return client(Object.fromEntries(cookies), requestHeaders);
+      },
       async request(method, route, body) {
         const headers = { "Content-Type": "application/json", ...requestHeaders };
         if (cookies.size) headers.Cookie = [...cookies].map(([key, value]) => `${key}=${value}`).join("; ");
@@ -1106,6 +1109,21 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
         status: "ACTIVE",
       }).sort({ createdAt: -1 });
       assert.ok(oldSession, "the employee must have an active session before the combined update");
+      const staleSessionProbe = pendingClient.clone();
+      const oldChallengeClient = await knownClient(employee, "198.51.100.24");
+      await oldChallengeClient.request("GET", "/auth/csrf");
+      const oldChallengeLogin = await oldChallengeClient.request("POST", "/auth/login", {
+        portal: "employee",
+        email: employee.email,
+        password,
+      });
+      assert.equal(oldChallengeLogin.status, 200);
+      assert.equal(oldChallengeLogin.body.requiresMfa, true);
+      const oldChallenge = await PreAuth.findOne({
+        userId: employee._id,
+        portal: "EMPLOYEE",
+      }).sort({ createdAt: -1 });
+      assert.ok(oldChallenge, "a password-verified, unfinished MFA challenge must exist");
 
       const destinationDepartment = await Department.create({
         name: "Disabled employee destination",
@@ -1124,6 +1142,7 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       const revokedSession = await Session.findById(oldSession._id);
       assert.equal(revokedSession.status, "REVOKED");
       assert.equal(revokedSession.revokeReason, "Account role or status changed");
+      assert.equal(await PreAuth.exists({ _id: oldChallenge._id }), null);
 
       const followUpAccess = await pendingClient.request("GET", "/profile");
       assert.equal(followUpAccess.status, 401);
@@ -1173,6 +1192,101 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       assert.ok(row.description.includes(
         `Department changed from ${department.name} to ${destinationDepartment.name}.`,
       ));
+
+      const reactivationDepartment = await Department.create({
+        name: "Reactivated employee department",
+      });
+      const reactivation = await adminClient.request("PATCH", `/users/${employee._id}`, {
+        status: "ACTIVE",
+        departmentId: String(reactivationDepartment._id),
+      });
+      assert.equal(reactivation.status, 200);
+      assert.equal(reactivation.body.user.status, "ACTIVE");
+      assert.equal(String(reactivation.body.user.departmentId), String(reactivationDepartment._id));
+
+      const reactivatedEmployee = await User.findById(employee._id);
+      assert.equal(reactivatedEmployee.status, "ACTIVE");
+      assert.equal(String(reactivatedEmployee.departmentId), String(reactivationDepartment._id));
+      assert.equal((await Session.findById(oldSession._id)).status, "REVOKED");
+      assert.equal(
+        await Session.countDocuments({ userId: employee._id, status: "ACTIVE" }),
+        0,
+        "reactivating the account must not restore any previously revoked session",
+      );
+      const staleAccessAfterReactivation = await staleSessionProbe.request("GET", "/profile");
+      assert.equal(staleAccessAfterReactivation.status, 401);
+      assert.equal(staleAccessAfterReactivation.body.code, "SESSION_REVOKED");
+
+      const staleMfaChallenge = await oldChallengeClient.request("POST", "/auth/mfa/verify", {
+        code: generateTotp(secret),
+      });
+      assert.equal(staleMfaChallenge.status, 401);
+      assert.equal(staleMfaChallenge.body.code, "PREAUTH_EXPIRED");
+
+      const freshClient = await knownClient(employee, "198.51.100.25");
+      const freshLogin = await signIn(freshClient, employee);
+      assert.equal(freshLogin.status, 200);
+      assert.equal(freshLogin.body.authenticated, true);
+      const freshSession = await Session.findOne({
+        userId: employee._id,
+        status: "ACTIVE",
+      }).sort({ createdAt: -1 });
+      assert.ok(freshSession);
+      assert.notEqual(String(freshSession._id), String(oldSession._id));
+      assert.equal(freshSession.roleAtIssue, "EMPLOYEE");
+      const freshIdentity = await freshClient.request("GET", "/auth/me");
+      assert.equal(freshIdentity.status, 200);
+      assert.equal(freshIdentity.body.user.status, "ACTIVE");
+      assert.equal(freshIdentity.body.user.role, "EMPLOYEE");
+
+      const reactivationEvent = await AuditLog.findOne({
+        eventType: "ACCOUNT_STATUS_CHANGED",
+        userId: admin._id,
+        "metadata.targetUserId": String(employee._id),
+        "metadata.status": "ACTIVE",
+        "metadata.newDepartmentId": String(reactivationDepartment._id),
+      }).sort({ createdAt: -1, _id: -1 }).lean();
+      assert.ok(reactivationEvent, "reactivation and second transfer must be audited");
+      assert.equal(reactivationEvent.userName, admin.name);
+      assert.equal(reactivationEvent.role, "ADMIN");
+      assert.equal(reactivationEvent.status, "SUCCESS");
+      assert.deepEqual({
+        targetUserId: reactivationEvent.metadata.targetUserId,
+        role: reactivationEvent.metadata.role,
+        status: reactivationEvent.metadata.status,
+        oldDepartmentId: reactivationEvent.metadata.oldDepartmentId,
+        oldDepartmentName: reactivationEvent.metadata.oldDepartmentName,
+        newDepartmentId: reactivationEvent.metadata.newDepartmentId,
+        newDepartmentName: reactivationEvent.metadata.newDepartmentName,
+      }, {
+        targetUserId: String(employee._id),
+        role: "EMPLOYEE",
+        status: "ACTIVE",
+        oldDepartmentId: String(destinationDepartment._id),
+        oldDepartmentName: destinationDepartment.name,
+        newDepartmentId: String(reactivationDepartment._id),
+        newDepartmentName: reactivationDepartment.name,
+      });
+      assert.ok(reactivationEvent.description.includes("status to ACTIVE"));
+      assert.ok(reactivationEvent.description.includes(
+        `Department changed from ${destinationDepartment.name} to ${reactivationDepartment.name}.`,
+      ));
+
+      const reactivationAuditApi = await adminClient.request(
+        "GET",
+        `/audit-logs?eventType=ACCOUNT_STATUS_CHANGED&userId=${admin._id}&from=${encodeURIComponent(reactivationEvent.createdAt.toISOString())}`,
+      );
+      assert.equal(reactivationAuditApi.status, 200);
+      const reactivationRow = reactivationAuditApi.body.logs.find(
+        (item) => String(item.id) === String(reactivationEvent._id),
+      );
+      assert.ok(reactivationRow);
+      assert.equal(String(reactivationRow.userId), String(admin._id));
+      assert.equal(reactivationRow.status, "SUCCESS");
+      assert.equal(reactivationRow.metadata.targetUserId, String(employee._id));
+      assert.equal(reactivationRow.metadata.status, "ACTIVE");
+      assert.equal(reactivationRow.metadata.oldDepartmentName, destinationDepartment.name);
+      assert.equal(reactivationRow.metadata.newDepartmentName, reactivationDepartment.name);
     });
 
     await t.test("Cookie-authenticated writes require a CSRF token", async () => {

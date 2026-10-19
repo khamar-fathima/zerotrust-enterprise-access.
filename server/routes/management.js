@@ -1,7 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { Department, Device, AuditLog, Role, Session, User } from "../models/index.js";
+import { Department, Device, AuditLog, PreAuth, Role, Session, User } from "../models/index.js";
 import { writeAudit } from "../lib/audit.js";
 import { cookieOptions, hashToken, requestContext } from "../lib/security.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -147,6 +147,9 @@ router.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req, res, n
       await Session.updateMany({ userId: target._id, status: "ACTIVE" }, {
         $set: { status: "REVOKED", revokedAt: new Date(), revokeReason: "Account role or status changed" },
       });
+    }
+    if (input.status === "DISABLED") {
+      await PreAuth.deleteMany({ userId: target._id });
     }
     const eventType = input.role && input.role !== beforeRole ? "ROLE_MODIFIED" : input.status && input.status !== beforeStatus ? "ACCOUNT_STATUS_CHANGED" : "USER_UPDATED";
     await writeAudit(req, {
