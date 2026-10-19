@@ -66,8 +66,8 @@ export default function Guarded({ role, onUser }) {
   return <AppLayout user={state.user} role={role} onLogout={logout}>
     <LazyBoundary>
       <Routes>
-        <Route index element={<DashboardPage role={role} />} />
-        <Route path="dashboard" element={<DashboardPage role={role} />} />
+        <Route index element={<DashboardPage role={role} user={state.user} />} />
+        <Route path="dashboard" element={<DashboardPage role={role} user={state.user} />} />
         <Route path="users" element={<UsersPage role={role} user={state.user} />} />
         <Route path="roles" element={<RolesPage />} />
         <Route path="devices" element={<DevicesPage role={role} />} />

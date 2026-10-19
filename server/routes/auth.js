@@ -49,6 +49,7 @@ function safeUser(user) {
     name: user.name,
     email: user.email,
     role: user.role,
+    isBootstrapAdmin: user.isBootstrapAdmin === true,
     status: user.status,
     departmentId: user.departmentId?._id || user.departmentId || null,
     departmentName: user.departmentId?.name || "",

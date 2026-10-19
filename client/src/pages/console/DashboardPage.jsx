@@ -6,6 +6,7 @@ import {
 import { api } from "../../lib/api.js";
 import { errorMessage, prettyDate, safeArray } from "../../lib/identity.js";
 import { EmptyState, LoadingRows, Notice, PageHeading, Panel } from "../../components/Shared.jsx";
+import RiskAnalysisPanel from "./RiskAnalysisPanel.jsx";
 
 function ActivityChart({ rows }) {
   const chartRows = rows.map((r) => ({ ...r, date: r.date ? new Date(r.date).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "" }));
@@ -30,7 +31,7 @@ function RoleDistributionChart({ rows }) {
   return <div className="chart-area" style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 18px" }}><ResponsiveContainer width="58%" height="100%"><PieChart><Pie data={chartRows} dataKey="value" nameKey="name" innerRadius="57%" outerRadius="82%" paddingAngle={2}>{chartRows.map((item, index) => <Cell key={item.name} fill={colors[index % colors.length]} />)}</Pie><Tooltip contentStyle={{ border: "1px solid #d7dfd7", borderRadius: 6, background: "#fbfcf8", fontSize: 11 }} /></PieChart></ResponsiveContainer><div style={{ display: "grid", gap: 11, flex: 1 }}>{chartRows.map((item, index) => <div key={item.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11 }}><span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: colors[index % colors.length] }} />{item.name}</span><strong>{item.value}</strong></div>)}</div></div>;
 }
 
-export default function DashboardPage({ role }) {
+export default function DashboardPage({ role, user }) {
   const [data, setData] = useState(null);
   const [activityData, setActivityData] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -79,5 +80,6 @@ export default function DashboardPage({ role }) {
     {role === "admin" && <div style={{ marginTop: 17 }}><Panel title="Recent security activity" note="Latest audit events across the institution">
       {loading ? <div style={{ padding: 20 }}><LoadingRows /></div> : recentActivity.length ? <div className="activity-list">{recentActivity.slice(0, 8).map((item, i) => <div className="activity-row" key={item.id || i}><span className="activity-dot" /><div><div className="activity-title">{item.description || item.eventType || "Access event"}</div><div className="activity-meta">{item.userName || "Identity service"} · {prettyDate(item.createdAt)} · {item.status || "Recorded"}</div></div></div>)}</div> : <EmptyState title="No recent security activity" detail="The service returned no recent audit events." icon={Zap} />}
     </Panel></div>}
+    {role === "admin" && user?.isBootstrapAdmin === true && <div className="risk-panel-spacing"><RiskAnalysisPanel /></div>}
   </main>;
 }

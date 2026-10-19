@@ -1,9 +1,35 @@
 import { Router } from "express";
+import { rateLimit } from "express-rate-limit";
 import { AuditLog, Device, Resource, Session, User } from "../models/index.js";
 import { requireAuth } from "../middleware/auth.js";
+import { writeAudit } from "../lib/audit.js";
+import { AiProviderUnavailableError, generateRiskAnalysis } from "../services/aiRiskAnalysis.js";
+import { getRiskSnapshot } from "../services/riskAnalysis.js";
 
 const router = Router();
 const DAY = 24 * 60 * 60 * 1000;
+const riskAnalysisLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: { error: "Too many AI risk analyses. Try again in 15 minutes.", code: "RATE_LIMITED" },
+});
+
+export function canViewRiskAnalysis(user) {
+  return user?.role === "ADMIN" && user?.isBootstrapAdmin === true;
+}
+
+async function requireBootstrapAdministrator(req, res, next) {
+  if (canViewRiskAnalysis(req.user)) return next();
+  await writeAudit(req, {
+    eventType: "RISK_ANALYSIS_ACCESS_DENIED",
+    description: "A non-bootstrap account attempted to access the super-admin risk analysis.",
+    status: "CRITICAL",
+    user: req.user,
+  });
+  return res.status(403).json({ error: "Only the bootstrap administrator can view risk analysis.", code: "FORBIDDEN" });
+}
 
 function dayKey(date) {
   return new Date(date).toISOString().slice(0, 10);
@@ -17,6 +43,56 @@ function labelsForLastWeek() {
     return { date, key: dayKey(date), label: date.toLocaleDateString("en", { weekday: "short", timeZone: "UTC" }) };
   });
 }
+
+router.get("/dashboard/risk-analysis", requireAuth, requireBootstrapAdministrator, async (_req, res, next) => {
+  try {
+    res.json({ snapshot: await getRiskSnapshot() });
+  } catch (error) { next(error); }
+});
+
+router.post("/dashboard/risk-analysis", requireAuth, requireBootstrapAdministrator, riskAnalysisLimit, async (req, res, next) => {
+  let snapshot;
+  try {
+    snapshot = await getRiskSnapshot();
+    const analysis = await generateRiskAnalysis(snapshot);
+    await writeAudit(req, {
+      eventType: "RISK_ANALYSIS_GENERATED",
+      description: "Bootstrap administrator generated an AI risk analysis.",
+      status: "SUCCESS",
+      user: req.user,
+      metadata: {
+        organizationScore: snapshot.organization.score,
+        windowDays: snapshot.windowDays,
+        accountCount: snapshot.accounts.length,
+      },
+    });
+    res.json({ snapshot, analysis });
+  } catch (error) {
+    await writeAudit(req, {
+      eventType: "RISK_ANALYSIS_FAILED",
+      description: "Bootstrap administrator requested an AI risk analysis but no report was produced.",
+      status: "WARNING",
+      user: req.user,
+      metadata: snapshot ? { organizationScore: snapshot.organization.score, windowDays: snapshot.windowDays } : {},
+    }).catch(() => {});
+    if (error instanceof AiProviderUnavailableError) {
+      return res.status(503).json({
+        error: "AI analysis is not enabled for this app. The deterministic risk score is still available.",
+        code: "AI_NOT_CONFIGURED",
+      });
+    }
+    if (error?.name === "ZodError" || error instanceof SyntaxError) {
+      return res.status(502).json({ error: "The AI provider returned an invalid analysis. Try again.", code: "AI_INVALID_RESPONSE" });
+    }
+    if (error?.status === 401 || error?.status === 403) {
+      return res.status(503).json({ error: "The managed AI provider is not available to this app.", code: "AI_NOT_CONFIGURED" });
+    }
+    if (error?.status === 429 || error?.status >= 500 || error?.name === "APIConnectionError" || error?.name === "APIConnectionTimeoutError") {
+      return res.status(503).json({ error: "AI analysis could not be generated right now. The risk score is still available.", code: "AI_UNAVAILABLE" });
+    }
+    next(error);
+  }
+});
 
 router.get("/dashboard/summary", requireAuth, async (req, res, next) => {
   try {
