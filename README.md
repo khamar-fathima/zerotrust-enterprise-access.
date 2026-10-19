@@ -82,9 +82,18 @@ All routes are under `/api`. Error bodies use `{ error, code? }`. List endpoints
 | Auditing | `GET /audit-logs` with status, event type, user, date, and text filters |
 | Resources | `GET /resources`, `POST /resources`, `PATCH /resources/:id`, `GET /resources/:id/content` |
 | Dashboard | `GET /dashboard/summary`, `GET /dashboard/activity` |
+| Risk analysis | `GET /dashboard/risk-analysis`, `POST /dashboard/risk-analysis` (bootstrap administrator only) |
 | Profile | `GET /profile`, `PATCH /profile`, `GET /profile/login-history` |
 
 Administrative writes are administrator-only. Users can revoke their own sessions/devices. MFA disable requires password and TOTP reauthentication, revokes sessions, and requires enrollment again on the next sign-in. Audit records have no application edit/delete endpoints.
+
+## Bootstrap-administrator risk analysis
+
+The original bootstrap administrator can view organization-wide and individual-account risk on the admin dashboard. Other administrators, managers, and employees are denied by the server. Scores use explicit weighted rules, current MFA/device posture, and the last seven days of authentication and access events; critical denials are not double-counted. The view shows every contributing factor, session-count context, and event changes against the previous seven days. The score is a college-demo heuristic, not a prediction or proof of compromise.
+
+AI advice is generated only on request and cannot change scores, permissions, or accounts. The server sends only counts, fixed factor descriptions, roles, scores, and temporary account references—never names, emails, database IDs, IPs, raw audit descriptions, or credentials. The text is not saved; generation/failure is audited. A provider outage or missing configuration leaves the deterministic scores usable and shows an explicit error.
+
+The AI client supports OpenAI-compatible configuration supplied by Replit-managed AI setup (`AI_INTEGRATIONS_OPENAI_API_KEY`/`AI_INTEGRATIONS_OPENAI_BASE_URL`) or standard OpenAI server configuration (`OPENAI_API_KEY`/`OPENAI_BASE_URL`). No key belongs in source code or the frontend. The default model is `gpt-4.1-mini`; `OPENAI_RISK_MODEL` can override it. Live advice requires the provider connection to be provisioned; adding the package alone does not enable AI access.
 
 ## Testing
 
@@ -93,6 +102,8 @@ Administrative writes are administrator-only. Users can revoke their own session
 Never point this educational project at a production identity database. Use a dedicated Atlas project/database and non-sensitive demonstration accounts.
 
 The frontend render smoke tests load each extracted page module without running effects or bypassing authentication. They catch broken component imports and initial rendering regressions; they do not replace interactive browser verification of sign-in or MFA. Protected routes still verify the session and role before rendering their lazy-loaded page.
+
+The risk score/redaction unit tests run without MongoDB or a model call. The risk-panel browser test uses explicitly mocked API responses to verify UI states and request timing; it does not verify real sign-in, backend authorization, or live AI generation. The MongoDB acceptance suite separately checks bootstrap-only risk API access.
 
 Every `npm run build` automatically runs `check:bundle` and fails if a budget is exceeded or dashboard/management modules enter the initial static import graph. The budgets are 400 KB raw / 150 KB gzip for initial JavaScript and 500 KB raw per chunk. `npm run check:bundle` can also recheck an existing build independently.
 

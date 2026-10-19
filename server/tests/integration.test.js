@@ -114,6 +114,39 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       assert.equal((await managerClient.request("GET", "/roles")).status, 403);
     });
 
+    await t.test("Risk scores are visible only to the bootstrap administrator", async () => {
+      assert.equal((await adminClient.request("GET", "/auth/me")).body.user.isBootstrapAdmin, true);
+      const risk = await adminClient.request("GET", "/dashboard/risk-analysis");
+      assert.equal(risk.status, 200);
+      assert.equal(risk.body.snapshot.windowDays, 7);
+      assert.equal(typeof risk.body.snapshot.organization.score, "number");
+      assert.ok(risk.body.snapshot.accounts.some((account) => String(account.id) === String(employee._id)));
+      assert.equal(JSON.stringify(risk.body).includes(employee.email), false);
+
+      const ordinaryAdmin = await makeUser("ADMIN");
+      const ordinaryAdminClient = await knownClient(ordinaryAdmin, "198.51.100.42");
+      try {
+        assert.equal((await signIn(ordinaryAdminClient, ordinaryAdmin)).body.authenticated, true);
+        assert.equal((await ordinaryAdminClient.request("GET", "/auth/me")).body.user.isBootstrapAdmin, false);
+        for (const unauthorizedClient of [ordinaryAdminClient, managerClient, employeeClient]) {
+          for (const method of ["GET", "POST"]) {
+            const denied = await unauthorizedClient.request(method, "/dashboard/risk-analysis");
+            assert.equal(denied.status, 403);
+            assert.equal(denied.body.code, "FORBIDDEN");
+          }
+        }
+        assert.ok(await AuditLog.exists({ eventType: "RISK_ANALYSIS_ACCESS_DENIED", userId: ordinaryAdmin._id }));
+        assert.equal(await AuditLog.countDocuments({ eventType: "RISK_ANALYSIS_GENERATED" }), 0);
+      } finally {
+        await Promise.all([
+          Session.deleteMany({ userId: ordinaryAdmin._id }),
+          Device.deleteMany({ userId: ordinaryAdmin._id }),
+          User.deleteOne({ _id: ordinaryAdmin._id }),
+          AuditLog.deleteMany({ $or: [{ userId: ordinaryAdmin._id }, { eventType: "RISK_ANALYSIS_ACCESS_DENIED" }] }),
+        ]);
+      }
+    });
+
     await t.test("4. Invalid MFA code cannot complete authentication", async () => {
       const badClient = client();
       await badClient.request("GET", "/auth/csrf");

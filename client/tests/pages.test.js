@@ -33,6 +33,7 @@ const cases = [
   ["/src/pages/PortalPages.jsx", "DeviceVerificationPage", {}, "One more boundary."],
   ["/src/components/ForcePasswordPage.jsx", "default", { user, onUser() {} }, "Update your password."],
   ["/src/pages/console/DashboardPage.jsx", "default", { role: "admin" }, "Good morning."],
+  ["/src/pages/console/DashboardPage.jsx", "default", { role: "admin", user: { ...user, isBootstrapAdmin: true } }, "Identity risk review"],
   ["/src/pages/console/DashboardPage.jsx", "default", { role: "manager" }, "Team access, at a glance."],
   ["/src/pages/console/DashboardPage.jsx", "default", { role: "employee" }, "Your access, in focus."],
   ["/src/pages/console/UsersPage.jsx", "default", { role: "admin" }, "User management."],

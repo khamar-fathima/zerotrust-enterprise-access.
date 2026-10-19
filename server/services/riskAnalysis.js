@@ -1,4 +1,4 @@
-import { AuditLog, Device, User } from "../models/index.js";
+import { AuditLog, Device, Session, User } from "../models/index.js";
 
 export const RISK_WINDOW_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -16,6 +16,7 @@ const deniedEventTypes = new Set([
   "INACTIVE_ACCOUNT_ACCESS",
   "MFA_REQUIRED_ACCESS",
   "UNAPPROVED_DEVICE_ACCESS",
+  "RISK_ANALYSIS_ACCESS_DENIED",
 ]);
 
 export function riskLevel(score) {
@@ -34,16 +35,16 @@ function countFor(map, userId) {
   return map.get(String(userId)) || { failed: 0, denied: 0, critical: 0 };
 }
 
+export function classifyRiskEvent(eventType, status) {
+  if (failedEventTypes.has(eventType)) return "failed";
+  if (deniedEventTypes.has(eventType)) return "denied";
+  return status === "CRITICAL" ? "critical" : null;
+}
+
 function addEvents(target, eventRows, byUser = false) {
   for (const row of eventRows) {
     const { eventType, status } = row._id;
-    const bucket = failedEventTypes.has(eventType)
-      ? "failed"
-      : deniedEventTypes.has(eventType)
-        ? "denied"
-        : status === "CRITICAL"
-          ? "critical"
-          : null;
+    const bucket = classifyRiskEvent(eventType, status);
     if (!bucket) continue;
     const key = byUser ? String(row._id.userId || "") : "organization";
     if (!key) continue;
@@ -113,7 +114,7 @@ export async function getRiskSnapshot(now = new Date()) {
     .lean();
   const activeUserIds = activeUsers.map((user) => user._id);
 
-  const [currentGlobalEvents, previousGlobalEvents, accountEventRows, staleDeviceRows] = await Promise.all([
+  const [currentGlobalEvents, previousGlobalEvents, accountEventRows, staleDeviceRows, activeSessionRows] = await Promise.all([
     AuditLog.aggregate([
       { $match: { createdAt: { $gte: currentStart, $lt: now } } },
       { $group: { _id: { eventType: "$eventType", status: "$status" }, count: { $sum: 1 } } },
@@ -129,7 +130,11 @@ export async function getRiskSnapshot(now = new Date()) {
       ])
       : Promise.resolve([]),
     Device.aggregate([
-      { $match: { status: "PENDING", createdAt: { $lte: staleDeviceBefore } } },
+      { $match: { userId: { $in: activeUserIds }, status: "PENDING", createdAt: { $lte: staleDeviceBefore } } },
+      { $group: { _id: "$userId", count: { $sum: 1 } } },
+    ]),
+    Session.aggregate([
+      { $match: { userId: { $in: activeUserIds }, status: "ACTIVE", expiresAt: { $gt: now }, lastActivity: { $gt: new Date(now.getTime() - 30 * 60 * 1000) } } },
       { $group: { _id: "$userId", count: { $sum: 1 } } },
     ]),
   ]);
@@ -141,6 +146,7 @@ export async function getRiskSnapshot(now = new Date()) {
   addEvents(previousCounts, previousGlobalEvents);
   addEvents(accountCounts, accountEventRows, true);
   const staleByUser = new Map(staleDeviceRows.map((row) => [String(row._id), row.count]));
+  const sessionsByUser = new Map(activeSessionRows.map((row) => [String(row._id), row.count]));
   const globalActivity = currentCounts.get("organization") || { failed: 0, denied: 0, critical: 0 };
   const previousActivity = previousCounts.get("organization") || { failed: 0, denied: 0, critical: 0 };
   const organization = calculateOrganizationRisk({
@@ -153,6 +159,7 @@ export async function getRiskSnapshot(now = new Date()) {
     name: user.name,
     role: user.role,
     mfaEnabled: user.mfaEnabled === true,
+    activeSessionCount: sessionsByUser.get(String(user._id)) || 0,
     ...calculateAccountRisk(user, countFor(accountCounts, user._id), staleByUser.get(String(user._id)) || 0),
   })).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 
@@ -164,6 +171,7 @@ export async function getRiskSnapshot(now = new Date()) {
     organization: {
       ...organization,
       activeAccountCount: activeUsers.length,
+      activeSessionCount: activeSessionRows.reduce((sum, row) => sum + row.count, 0),
       highRiskAccountCount: accounts.filter((account) => account.score >= 50).length,
       trends: trend(globalActivity, previousActivity),
     },
@@ -180,6 +188,7 @@ export function buildRedactedRiskInput(snapshot) {
       accountRef,
       role: account.role,
       mfaEnabled: account.mfaEnabled,
+      activeSessionCount: account.activeSessionCount,
       riskScore: account.score,
       riskLevel: account.level,
       factors: account.factors.filter((item) => item.points > 0).map(({ key, points, detail }) => ({ key, points, detail })),
@@ -193,6 +202,7 @@ export function buildRedactedRiskInput(snapshot) {
         score: snapshot.organization.score,
         level: snapshot.organization.level,
         activeAccountCount: snapshot.organization.activeAccountCount,
+        activeSessionCount: snapshot.organization.activeSessionCount,
         mfaCoveragePercent: snapshot.organization.mfaCoveragePercent,
         highRiskAccountCount: snapshot.organization.highRiskAccountCount,
         factors: snapshot.organization.factors.map(({ key, points, detail }) => ({ key, points, detail })),

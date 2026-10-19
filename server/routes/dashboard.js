@@ -3,7 +3,7 @@ import { rateLimit } from "express-rate-limit";
 import { AuditLog, Device, Resource, Session, User } from "../models/index.js";
 import { requireAuth } from "../middleware/auth.js";
 import { writeAudit } from "../lib/audit.js";
-import { AiProviderUnavailableError, generateRiskAnalysis } from "../services/aiRiskAnalysis.js";
+import { AiInvalidResponseError, AiProviderUnavailableError, generateRiskAnalysis } from "../services/aiRiskAnalysis.js";
 import { getRiskSnapshot } from "../services/riskAnalysis.js";
 
 const router = Router();
@@ -54,6 +54,9 @@ router.post("/dashboard/risk-analysis", requireAuth, requireBootstrapAdministrat
   let snapshot;
   try {
     snapshot = await getRiskSnapshot();
+    if (snapshot.organization.score === null) {
+      return res.status(409).json({ error: "No active accounts are available to analyze.", code: "RISK_DATA_UNAVAILABLE" });
+    }
     const analysis = await generateRiskAnalysis(snapshot);
     await writeAudit(req, {
       eventType: "RISK_ANALYSIS_GENERATED",
@@ -63,7 +66,7 @@ router.post("/dashboard/risk-analysis", requireAuth, requireBootstrapAdministrat
       metadata: {
         organizationScore: snapshot.organization.score,
         windowDays: snapshot.windowDays,
-        accountCount: snapshot.accounts.length,
+        accountCount: snapshot.organization.activeAccountCount,
       },
     });
     res.json({ snapshot, analysis });
@@ -81,7 +84,7 @@ router.post("/dashboard/risk-analysis", requireAuth, requireBootstrapAdministrat
         code: "AI_NOT_CONFIGURED",
       });
     }
-    if (error?.name === "ZodError" || error instanceof SyntaxError) {
+    if (error instanceof AiInvalidResponseError) {
       return res.status(502).json({ error: "The AI provider returned an invalid analysis. Try again.", code: "AI_INVALID_RESPONSE" });
     }
     if (error?.status === 401 || error?.status === 403) {
