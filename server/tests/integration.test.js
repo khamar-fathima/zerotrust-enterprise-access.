@@ -183,6 +183,16 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
           foreignResources: [engineeringResource],
         },
       ];
+      const unassignedManager = await makeUser("MANAGER", {
+        departmentId: null, name: "Unassigned manager",
+      });
+      const unassignedEmployees = await Promise.all([
+        makeUser("EMPLOYEE", { departmentId: null, name: "Unassigned employee one" }),
+        makeUser("EMPLOYEE", { departmentId: null, name: "Unassigned employee two" }),
+      ]);
+      const unassignedClient = await knownClient(unassignedManager);
+      const unassignedLogin = await signIn(unassignedClient, unassignedManager);
+      assert.equal(unassignedLogin.status, 200);
       const ids = (rows) => rows.map((row) => String(row.id || row._id)).sort();
       const deniedEvents = [];
       const assertSafeUser = (user) => {
@@ -207,6 +217,101 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
         assert.equal(event.status, "CRITICAL");
         deniedEvents.push(event);
       }
+
+      await t.test("an unassigned manager cannot enumerate unassigned or assigned staff", async () => {
+        const listing = await unassignedClient.request("GET", "/users");
+        assert.equal(listing.status, 200);
+        assert.deepEqual(listing.body.users, []);
+        assert.equal(listing.body.total, 0);
+
+        const ownIdentity = await unassignedClient.request("GET", `/users/${unassignedManager._id}`);
+        assert.equal(ownIdentity.status, 200);
+        assert.equal(ownIdentity.body.user.id, String(unassignedManager._id));
+        assertSafeUser(ownIdentity.body.user);
+        for (const target of [...unassignedEmployees, manager, operationsManager]) {
+          await expectDenied(unassignedClient, `/users/${target._id}`,
+            "UNAUTHORIZED_USER_ACCESS", "targetUserId", target, target.email);
+        }
+
+        const departments = await unassignedClient.request("GET", "/departments");
+        assert.equal(departments.status, 200);
+        assert.deepEqual(departments.body.departments, []);
+      });
+
+      await t.test("administrators retain global visibility of unassigned identities", async () => {
+        const listing = await adminClient.request("GET", "/users");
+        assert.equal(listing.status, 200);
+        const visibleIds = ids(listing.body.users);
+        for (const target of [unassignedManager, ...unassignedEmployees]) {
+          assert.ok(visibleIds.includes(String(target._id)));
+          const identity = await adminClient.request("GET", `/users/${target._id}`);
+          assert.equal(identity.status, 200);
+          assert.equal(identity.body.user.id, String(target._id));
+        }
+        const departments = await adminClient.request("GET", "/departments");
+        assert.equal(departments.status, 200);
+        assert.ok(ids(departments.body.departments).includes(String(department._id)));
+        assert.ok(ids(departments.body.departments).includes(String(operations._id)));
+      });
+
+      await t.test("an unassigned manager sees only role-authorized shared resources", async () => {
+        const listing = await unassignedClient.request("GET", "/resources");
+        assert.equal(listing.status, 200);
+        assert.deepEqual(ids(listing.body.resources), [String(sharedResource._id)]);
+        assert.equal(Object.hasOwn(listing.body.resources[0], "content"), false);
+        const sharedContent = await unassignedClient.request("GET", `/resources/${sharedResource._id}/content`);
+        assert.equal(sharedContent.status, 200);
+        assert.equal(sharedContent.body.resource.content, sharedResource.content);
+        for (const target of [engineeringResource, operationsResource, operationsManagerResource]) {
+          await expectDenied(unassignedClient, `/resources/${target._id}/content`,
+            "UNAUTHORIZED_RESOURCE_ACCESS", "resourceId", target, target.content);
+        }
+      });
+
+      await t.test("unassigned managers get fail-closed people counts and no team activity", async () => {
+        const markerTime = new Date(Date.now() + 2000);
+        const markers = await AuditLog.create([
+          ...unassignedEmployees.map((person) => ({
+            userId: person._id, userName: person.name, role: "EMPLOYEE",
+            eventType: "TEST_UNASSIGNED_ACTIVITY", description: person.name, createdAt: markerTime,
+          })),
+          {
+            userId: employee._id, userName: employee.name, role: "EMPLOYEE",
+            eventType: "TEST_ASSIGNED_ACTIVITY", description: "Engineering assigned activity", createdAt: markerTime,
+          },
+          {
+            userId: operationsEmployees[0]._id, userName: operationsEmployees[0].name, role: "EMPLOYEE",
+            eventType: "TEST_ASSIGNED_ACTIVITY", description: "Operations assigned activity", createdAt: markerTime,
+          },
+        ]);
+        const response = await unassignedClient.request("GET", "/dashboard/summary");
+        assert.equal(response.status, 200);
+        assert.equal(response.body.role, "MANAGER");
+        assert.equal(response.body.departmentName, "Unassigned");
+        assert.deepEqual(response.body.metrics, {
+          employees: 0, resources: 1, activeSessions: 1,
+        });
+        assert.deepEqual(response.body.recentActivity, []);
+        assert.equal(response.body.recentActivity.some((event) => markers.some(
+          (marker) => String(marker._id) === String(event.id),
+        )), false);
+
+        // The two assigned-department controls retain their own counts and activity.
+        for (const [control, expectedEmployeeCount, marker] of [
+          [scopes[0], scopes[0].employees.length, markers[2]],
+          [scopes[1], scopes[1].employees.length, markers[3]],
+        ]) {
+          const controlSummary = await control.client.request("GET", "/dashboard/summary");
+          assert.equal(controlSummary.status, 200);
+          assert.equal(controlSummary.body.metrics.employees, expectedEmployeeCount);
+          assert.ok(controlSummary.body.recentActivity.some(
+            (event) => String(event.id) === String(marker._id),
+          ));
+          for (const event of controlSummary.body.recentActivity) {
+            assert.equal(unassignedEmployees.some((person) => String(person._id) === String(event.userId)), false);
+          }
+        }
+      });
 
       await t.test("both managers see only their active employees and their own department", async () => {
         for (const scope of scopes) {

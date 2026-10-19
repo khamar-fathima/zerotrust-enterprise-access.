@@ -44,9 +44,12 @@ router.get("/dashboard/summary", requireAuth, async (req, res, next) => {
       const departmentId = user.departmentId?._id || user.departmentId;
       const team = departmentId ? await User.find({ departmentId }).select("_id").lean() : [];
       const teamIds = team.map((item) => item._id);
+      const resourceScope = departmentId
+        ? { $or: [{ departmentId }, { departmentId: null }] }
+        : { departmentId: null };
       const [employees, resources, events, activeSessions] = await Promise.all([
-        User.countDocuments({ departmentId, role: "EMPLOYEE", status: "ACTIVE" }),
-        Resource.countDocuments({ active: true, allowedRoles: "MANAGER", $or: [{ departmentId }, { departmentId: null }] }),
+        departmentId ? User.countDocuments({ departmentId, role: "EMPLOYEE", status: "ACTIVE" }) : 0,
+        Resource.countDocuments({ active: true, allowedRoles: "MANAGER", ...resourceScope }),
         AuditLog.find({ userId: { $in: teamIds } }).sort({ createdAt: -1 }).limit(8).lean(),
         Session.countDocuments({ userId: user._id, status: "ACTIVE", expiresAt: { $gt: new Date() } }),
       ]);
