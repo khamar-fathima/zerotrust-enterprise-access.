@@ -1,2 +1,3 @@
 - [Product scope](product-scope.md) — full college-demo IAM scope, priority security demonstration, and non-generic UI constraints.
 - [GitHub authorization](github-authorization.md) — integration status may disagree with CLI access; verify actual authentication before claiming a push.
+- [Browser verification scheduling](browser-verification.md) — run live browser acceptance separately from screenshot capture to avoid possible resource contention.

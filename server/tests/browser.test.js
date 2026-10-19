@@ -158,7 +158,7 @@ test("browser sign-in, MFA enrollment, and pending-device approval", {
 
     await t.test("administrator approves the employee's device and employee enters the console", async () => {
       await adminPage.getByRole("link", { name: "Device approvals" }).click();
-      await adminPage.getByRole("heading", { name: "Devices." }).waitFor();
+      await adminPage.getByRole("heading", { name: "Device approvals.", exact: true }).waitFor();
       const employeeRow = adminPage.getByRole("row").filter({ hasText: "Browser Test Employee" });
       await employeeRow.getByRole("button", { name: "Review device" }).waitFor();
       await employeeRow.getByRole("button", { name: "Review device" }).click();
