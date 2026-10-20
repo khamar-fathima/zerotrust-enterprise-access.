@@ -93,7 +93,7 @@ test("risk panel uses explicit AI requests, preserves scores on failure, and hid
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
     bootstrap = false;
-    await page.reload();
+    await page.reload({ waitUntil: "domcontentloaded" });
     await page.getByRole("heading", { name: "Good morning." }).waitFor();
     assert.equal(await page.locator(".risk-analysis-panel").count(), 0);
   } finally {
