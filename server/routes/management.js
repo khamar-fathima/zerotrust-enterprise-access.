@@ -5,9 +5,12 @@ import { Department, Device, AuditLog, PreAuth, Role, Session, User } from "../m
 import { writeAudit } from "../lib/audit.js";
 import { cookieOptions, hashToken, requestContext } from "../lib/security.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { auditQuery, literalSearch, pageMetadata, paginate, usersQuery } from "../lib/pagination.js";
+import {
+  auditQuery, deviceQuery, literalSearch, pageMetadata, paginate, sessionQuery, usersQuery,
+} from "../lib/pagination.js";
 
 const router = Router();
+const objectIdText = /^[a-f\d]{24}$/i;
 const safeUser = (user) => ({
   id: user._id,
   name: user.name,
@@ -80,11 +83,14 @@ router.get("/users/:id", requireAuth, async (req, res, next) => {
 
 router.post("/users", requireAuth, requireRole("ADMIN"), async (req, res, next) => {
   try {
+    if (typeof req.body?.departmentId === "string" && !objectIdText.test(req.body.departmentId)) {
+      return res.status(400).json({ error: "Choose a valid department.", code: "INVALID_DEPARTMENT_ID" });
+    }
     const input = z.object({
       name: z.string().trim().min(2).max(100),
       email: z.string().email().max(254),
       role: z.enum(["MANAGER", "EMPLOYEE"]),
-      departmentId: z.string().min(1),
+      departmentId: z.string().regex(objectIdText, "Choose a valid department."),
       temporaryPassword: z.string().min(12).max(128).regex(/[a-z]/).regex(/[A-Z]/).regex(/\d/),
     }).parse(req.body);
     const email = input.email.toLowerCase();
@@ -111,11 +117,14 @@ router.post("/users", requireAuth, requireRole("ADMIN"), async (req, res, next) 
 
 router.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req, res, next) => {
   try {
+    if (typeof req.body?.departmentId === "string" && req.body.departmentId !== "" && !objectIdText.test(req.body.departmentId)) {
+      return res.status(400).json({ error: "Choose a valid department.", code: "INVALID_DEPARTMENT_ID" });
+    }
     const input = z.object({
       name: z.string().trim().min(2).max(100).optional(),
       role: z.enum(["ADMIN", "MANAGER", "EMPLOYEE"]).optional(),
       status: z.enum(["ACTIVE", "DISABLED"]).optional(),
-      departmentId: z.string().nullable().optional(),
+      departmentId: z.union([z.string().regex(objectIdText, "Choose a valid department."), z.literal("")]).nullable().optional(),
     }).refine((value) => Object.keys(value).length > 0).parse(req.body);
     const target = await User.findById(req.params.id).populate("departmentId", "name");
     if (!target) return res.status(404).json({ error: "User not found." });
@@ -132,7 +141,7 @@ router.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req, res, n
     const oldDepartmentId = previousDepartment
       ? String(previousDepartment._id || previousDepartment)
       : null;
-    const requestedDepartmentId = input.departmentId == null ? null : String(input.departmentId);
+    const requestedDepartmentId = input.departmentId ? String(input.departmentId) : null;
     const departmentChanged = Object.hasOwn(input, "departmentId") && requestedDepartmentId !== oldDepartmentId;
     let newDepartment = null;
     if (departmentChanged && requestedDepartmentId) {
@@ -221,10 +230,22 @@ router.get("/departments", requireAuth, async (req, res, next) => {
 
 router.get("/devices", requireAuth, async (req, res, next) => {
   try {
+    const input = deviceQuery.parse(req.query);
     const filters = {};
     if (req.user.role !== "ADMIN") filters.userId = req.user._id;
-    if (req.query.status && ["PENDING", "APPROVED", "REVOKED"].includes(req.query.status)) filters.status = req.query.status;
-    const devices = await Device.find(filters).populate("userId", "name email role departmentId").sort({ createdAt: -1 }).limit(300);
+    else if (input.userId) filters.userId = input.userId;
+    if (input.status) filters.status = input.status;
+    if (input.q) {
+      const search = literalSearch(input.q);
+      const owners = await User.find({ $or: [{ name: search }, { email: search }] }).select("_id").limit(500).lean();
+      filters.$or = [
+        { name: search }, { browser: search }, { operatingSystem: search },
+        { userId: { $in: owners.map(({ _id }) => _id) } },
+      ];
+    }
+    const pagination = await paginate(Device, filters, input);
+    const devices = await Device.find(filters).populate("userId", "name email role departmentId")
+      .sort({ createdAt: -1, _id: -1 }).skip(pagination.skip).limit(pagination.limit);
     res.json({
       devices: devices.map((device) => ({
         id: device._id,
@@ -241,7 +262,7 @@ router.get("/devices", requireAuth, async (req, res, next) => {
         ipAddress: req.user.role === "ADMIN" ? device.ipAddress : undefined,
         current: device._id.equals(req.device._id),
       })),
-      total: devices.length,
+      ...pageMetadata(pagination),
     });
   } catch (error) { next(error); }
 });
@@ -278,14 +299,29 @@ router.patch("/devices/:id", requireAuth, async (req, res, next) => {
 
 router.get("/sessions", requireAuth, async (req, res, next) => {
   try {
+    const input = sessionQuery.parse(req.query);
     const filters = {};
     if (req.user.role !== "ADMIN") filters.userId = req.user._id;
-    if (req.query.status && ["ACTIVE", "EXPIRED", "REVOKED"].includes(req.query.status)) filters.status = req.query.status;
-    if (req.query.userId && req.user.role === "ADMIN") filters.userId = req.query.userId;
+    else if (input.userId) filters.userId = input.userId;
+    if (input.status) filters.status = input.status;
+    if (input.q) {
+      const search = literalSearch(input.q);
+      const [owners, devices] = await Promise.all([
+        User.find({ $or: [{ name: search }, { email: search }] }).select("_id").limit(500).lean(),
+        Device.find({ $or: [{ name: search }, { browser: search }, { operatingSystem: search }] }).select("_id").limit(500).lean(),
+      ]);
+      filters.$or = [
+        { browser: search },
+        ...(req.user.role === "ADMIN" ? [{ ipAddress: search }] : []),
+        { deviceId: { $in: devices.map(({ _id }) => _id) } },
+        { userId: { $in: owners.map(({ _id }) => _id) } },
+      ];
+    }
+    const pagination = await paginate(Session, filters, input);
     const sessions = await Session.find(filters)
       .populate("userId", "name email role")
       .populate("deviceId", "name status")
-      .sort({ lastActivity: -1 }).limit(300);
+      .sort({ lastActivity: -1, _id: -1 }).skip(pagination.skip).limit(pagination.limit);
     res.json({
       sessions: sessions.map((session) => ({
         id: session._id,
@@ -302,7 +338,7 @@ router.get("/sessions", requireAuth, async (req, res, next) => {
         lastActivity: session.lastActivity,
         current: session._id.equals(req.session._id),
       })),
-      total: sessions.length,
+      ...pageMetadata(pagination),
     });
   } catch (error) { next(error); }
 });

@@ -28,6 +28,18 @@ export const auditQuery = z.object({
   message: "Start date must not follow end date", path: ["to"],
 });
 
+export const deviceQuery = z.object({
+  ...common,
+  status: z.enum(["", "PENDING", "APPROVED", "REVOKED"]).optional(),
+  userId: optionalId,
+});
+
+export const sessionQuery = z.object({
+  ...common,
+  status: z.enum(["", "ACTIVE", "EXPIRED", "REVOKED"]).optional(),
+  userId: optionalId,
+});
+
 export function literalSearch(value) {
   return { $regex: value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
 }

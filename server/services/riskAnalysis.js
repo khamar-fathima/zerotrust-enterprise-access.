@@ -19,6 +19,7 @@ const deniedEventTypes = new Set([
   "UNAPPROVED_DEVICE_ACCESS",
   "RISK_ANALYSIS_ACCESS_DENIED",
 ]);
+export const RISK_EVIDENCE_EVENT_TYPES = [...new Set([...failedEventTypes, ...deniedEventTypes])];
 
 export function riskLevel(score) {
   if (score === null || score === undefined) return "NO_DATA";

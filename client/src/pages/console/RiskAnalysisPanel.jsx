@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle, ArrowDownRight, ArrowRight, ArrowUpRight, Bot, Check, CircleHelp,
-  Clock3, Fingerprint, RefreshCw, ShieldAlert, ShieldCheck, Sparkles, Users,
+  Clock3, Download, Fingerprint, RefreshCw, Search, ShieldAlert, ShieldCheck, Sparkles, Users,
 } from "lucide-react";
 import { api } from "../../lib/api.js";
 import { errorMessage } from "../../lib/identity.js";
@@ -65,10 +65,55 @@ function TrendValue({ trend }) {
   </div>;
 }
 
-function accountFindingName(accountRef, accounts) {
-  const match = /^acct-(\d+)$/i.exec(String(accountRef || ""));
-  if (!match) return null;
-  return accounts[Number(match[1]) - 1]?.name || null;
+function RiskFinding({ finding, accounts }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [events, setEvents] = useState([]);
+  const match = /^acct-(\d+)$/i.exec(String(finding.accountRef || ""));
+  const account = finding.scope === "account" && match ? accounts[Number(match[1]) - 1] : null;
+  const accountName = account?.name || null;
+  const canLoad = finding.scope === "organization" || Boolean(account?.id);
+  const toggleEvidence = async () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    if (events.length || !canLoad) return;
+    setLoading(true);
+    setError("");
+    try {
+      const response = await api.dashboard.riskAnalysisEvidence({
+        ...(account?.id ? { accountId: account.id } : {}),
+        days: 7,
+      });
+      setEvents(Array.isArray(response?.events) ? response.events : []);
+    } catch (requestError) {
+      setError(errorMessage(requestError, "Audit evidence could not be loaded."));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return <article className="risk-finding" key={`${finding.accountRef || finding.scope}-${finding.title}`}>
+    <div className="risk-finding__top"><RiskPill level={finding.priority} /><span>{finding.scope === "organization" ? "Organization" : accountName || "Individual account"}</span></div>
+    <h5>{finding.title}</h5>
+    {finding.evidence && <p>{finding.evidence}</p>}
+    {finding.recommendation && <div className="risk-finding__action"><ArrowRight size={13} />{finding.recommendation}</div>}
+    <button className="btn btn-quiet risk-evidence-toggle" onClick={toggleEvidence} disabled={!canLoad || loading} aria-expanded={open}>
+      <Search size={13} />{open ? "Hide audit evidence" : loading ? "Loading evidence" : "View audit evidence"}
+    </button>
+    {open && <div className="risk-evidence">
+      {loading ? <span>Loading matching audit events…</span>
+        : error ? <span className="risk-evidence__error">{error}</span>
+          : events.length ? events.map((event, index) => <div className="risk-evidence__event" key={`${event.createdAt}-${event.eventType}-${index}`}>
+            <div><strong>{event.eventType.replaceAll("_", " ")}</strong><span>{event.userName || "Identity service"} · {readableTime(event.createdAt)}</span></div>
+            <RiskPill level={event.status === "CRITICAL" ? "CRITICAL" : event.status === "WARNING" ? "MODERATE" : "LOW"} />
+            {event.description && <p>{event.description}</p>}
+          </div>)
+            : <span>No matching audit events were found in the last 7 days.</span>}
+    </div>}
+  </article>;
 }
 
 function AnalysisContent({ analysis, accounts }) {
@@ -79,15 +124,7 @@ function AnalysisContent({ analysis, accounts }) {
     {analysis?.trendSummary && <div className="risk-trend-summary"><span className="risk-mini-label">TREND READ</span><p>{analysis.trendSummary}</p></div>}
     {findings.length > 0 && <div className="risk-findings">
       <h4>Signals to review <span>{findings.length}</span></h4>
-      {findings.map((finding, index) => {
-        const accountName = finding.scope === "account" ? accountFindingName(finding.accountRef, accounts) : null;
-        return <article className="risk-finding" key={`${finding.accountRef || finding.scope}-${index}`}>
-          <div className="risk-finding__top"><RiskPill level={finding.priority} /><span>{finding.scope === "organization" ? "Organization" : accountName || "Individual account"}</span></div>
-          <h5>{finding.title}</h5>
-          {finding.evidence && <p>{finding.evidence}</p>}
-          {finding.recommendation && <div className="risk-finding__action"><ArrowRight size={13} />{finding.recommendation}</div>}
-        </article>;
-      })}
+      {findings.map((finding, index) => <RiskFinding finding={finding} accounts={accounts} key={`${finding.accountRef || finding.scope}-${index}`} />)}
     </div>}
     {recommendations.length > 0 && <div className="risk-recommendations">
       <h4>Suggested human checks</h4>
@@ -97,7 +134,13 @@ function AnalysisContent({ analysis, accounts }) {
   </div>;
 }
 
-function HistoryChart({ history, accountId, selectedDay, onSelectDay }) {
+function csvCell(value) {
+  let text = String(value ?? "");
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function HistoryChart({ history, accountId, selectedDay, onSelectDay, onSearchAccounts }) {
   const scoreFor = (row) => accountId === "organization" ? row.organization?.score : row.account?.score;
   const points = history.rows.map((row, index) => {
     const score = scoreFor(row);
@@ -121,12 +164,32 @@ function HistoryChart({ history, accountId, selectedDay, onSelectDay }) {
   const selected = history.rows.find((row) => row.day.slice(0, 10) === selectedDay);
   const selectedRisk = selected && (accountId === "organization" ? selected.organization : selected.account);
   const scoreLabel = accountId === "organization" ? "Organization score" : "Selected account score";
+  const downloadCsv = () => {
+    const factors = (row) => (row.factorTotals || []).map((factor) => `${factor.key}:${factor.points}`).join("; ");
+    const rows = [
+      ["Date", "Scope", "Score", "Factor totals"],
+      ...history.rows.map((row) => {
+        const data = accountId === "organization" ? row.organization : row.account;
+        return [row.day.slice(0, 10), history.scopeLabel, data?.score ?? "", data ? factors(data) : ""];
+      }),
+    ];
+    const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `risk-history-${accountId === "organization" ? "organization" : "account"}-${history.days}d.csv`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   return <section className="risk-history" aria-label="Daily risk score history">
     <div className="risk-section-heading risk-history__heading">
       <div><span className="risk-mini-label">DAILY DETERMINISTIC SCORES</span><h3>Risk score history</h3>
         <p>Snapshots retain scores and factor totals for 180 days. AI advice is never saved here.</p>
       </div>
       <div className="risk-history__controls">
+        <label className="risk-history__search"><span className="sr-only">Search risk history accounts</span>
+          <input className="field" value={history.accountSearch} onChange={(event) => onSearchAccounts(event.target.value)} placeholder="Search any identity" aria-label="Search risk history accounts" />
+        </label>
         <label><span className="sr-only">History scope</span>
           <select value={accountId} onChange={(event) => onSelectDay("scope", event.target.value)}>
             <option value="organization">Organization</option>
@@ -138,8 +201,12 @@ function HistoryChart({ history, accountId, selectedDay, onSelectDay }) {
             <option value={30}>Last 30 days</option><option value={90}>Last 90 days</option>
           </select>
         </label>
+        <button type="button" className="btn btn-outline risk-history__export" onClick={downloadCsv} disabled={history.loading || !history.rows.length}>
+          <Download size={13} /> Export CSV
+        </button>
       </div>
     </div>
+    {history.accountSearchError && <p className="risk-history__empty risk-history__empty--error">{history.accountSearchError}</p>}
     {history.loading ? <div className="risk-history__empty">Loading saved daily scores…</div>
       : history.error ? <div className="risk-history__empty risk-history__empty--error">{history.error}</div>
         : !history.rows.length ? <div className="risk-history__empty">No daily history yet. A snapshot is recorded when this dashboard is opened.</div>
@@ -191,6 +258,10 @@ export default function RiskAnalysisPanel() {
   const [historyError, setHistoryError] = useState("");
   const [historyDays, setHistoryDays] = useState(30);
   const [historyAccountId, setHistoryAccountId] = useState("organization");
+  const [historyAccountSearch, setHistoryAccountSearch] = useState("");
+  const [historySearchResults, setHistorySearchResults] = useState([]);
+  const [historySearchError, setHistorySearchError] = useState("");
+  const [selectedHistoryAccount, setSelectedHistoryAccount] = useState(null);
   const [selectedHistoryDay, setSelectedHistoryDay] = useState("");
 
   const loadSnapshot = useCallback(async () => {
@@ -234,6 +305,26 @@ export default function RiskAnalysisPanel() {
     if (snapshot) loadHistory();
   }, [loadHistory, snapshot]);
 
+  useEffect(() => {
+    const query = historyAccountSearch.trim();
+    if (query.length < 2) {
+      setHistorySearchResults([]);
+      setHistorySearchError("");
+      return undefined;
+    }
+    let active = true;
+    const timer = setTimeout(async () => {
+      setHistorySearchError("");
+      try {
+        const response = await api.dashboard.riskAnalysisAccounts(query);
+        if (active) setHistorySearchResults(Array.isArray(response?.accounts) ? response.accounts : []);
+      } catch (error) {
+        if (active) setHistorySearchError(errorMessage(error, "Identity search failed."));
+      }
+    }, 250);
+    return () => { active = false; clearTimeout(timer); };
+  }, [historyAccountSearch]);
+
   const generateAdvice = async () => {
     setAnalysisPending(true);
     setAnalysisError("");
@@ -260,9 +351,16 @@ export default function RiskAnalysisPanel() {
   const trends = Array.isArray(organization?.trends) ? organization.trends : [];
   const activeCount = Number(organization?.activeAccountCount) || 0;
   const cannotAnalyze = loading || analysisPending || !snapshot || Boolean(scoreError) || organization?.score == null;
-  const historyAccounts = accounts.map(({ id, name, role }) => ({ id, name, role }));
+  const historyAccountMap = new Map();
+  for (const account of [...accounts, ...historySearchResults, selectedHistoryAccount].filter(Boolean)) {
+    if (account.id) historyAccountMap.set(String(account.id), account);
+  }
+  const historyAccounts = [...historyAccountMap.values()];
   const changeHistorySelection = (type, value) => {
-    if (type === "scope") setHistoryAccountId(value);
+    if (type === "scope") {
+      setHistoryAccountId(value);
+      setSelectedHistoryAccount(value === "organization" ? null : historyAccountMap.get(String(value)) || null);
+    }
     else if (type === "days") setHistoryDays(value);
     else setSelectedHistoryDay(value);
   };
@@ -306,10 +404,22 @@ export default function RiskAnalysisPanel() {
             </section>
           </div>
           <HistoryChart
-            history={{ rows: historyRows, loading: historyLoading, error: historyError, days: historyDays, accounts: historyAccounts }}
+            history={{
+              rows: historyRows,
+              loading: historyLoading,
+              error: historyError,
+              days: historyDays,
+              accounts: historyAccounts,
+              accountSearch: historyAccountSearch,
+              accountSearchError: historySearchError,
+              scopeLabel: historyAccountId === "organization"
+                ? "Organization"
+                : historyAccountMap.get(String(historyAccountId))?.name || "Selected identity",
+            }}
             accountId={historyAccountId}
             selectedDay={selectedHistoryDay}
             onSelectDay={changeHistorySelection}
+            onSearchAccounts={setHistoryAccountSearch}
           />
           <section className="risk-accounts">
             <div className="risk-section-heading risk-accounts-heading"><div><span className="risk-mini-label">ACCOUNT REVIEW</span><h3>Highest-scoring identities</h3><p>Scores are deterministic; open a row to inspect the contributing reasons.</p></div><span className="risk-count"><Users size={13} />{accounts.length} shown</span></div>

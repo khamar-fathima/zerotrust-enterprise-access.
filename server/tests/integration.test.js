@@ -126,6 +126,9 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       assert.equal(history.status, 200);
       assert.ok(history.body.history.some((row) => typeof row.account?.score === "number"));
       assert.equal(JSON.stringify(history.body).includes(employee.email), false);
+      const evidence = await adminClient.request("GET", `/dashboard/risk-analysis/evidence?accountId=${employee._id}`);
+      assert.equal(evidence.status, 200);
+      assert.ok(evidence.body.events.some((event) => event.eventType === "PORTAL_ROLE_MISMATCH"));
 
       const ordinaryAdmin = await makeUser("ADMIN");
       const ordinaryAdminClient = await knownClient(ordinaryAdmin, "198.51.100.42");
@@ -144,6 +147,10 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
           const deniedHistory = await unauthorizedClient.request("GET", "/dashboard/risk-analysis/history");
           assert.equal(deniedHistory.status, 403);
           assert.equal(deniedHistory.body.code, "FORBIDDEN");
+          for (const route of ["/dashboard/risk-analysis/accounts", "/dashboard/risk-analysis/evidence"]) {
+            const denied = await unauthorizedClient.request("GET", route);
+            assert.equal(denied.status, 403);
+          }
         }
         assert.ok(await AuditLog.exists({ eventType: "RISK_ANALYSIS_ACCESS_DENIED", userId: ordinaryAdmin._id }));
         assert.equal(await AuditLog.countDocuments({ eventType: "RISK_ANALYSIS_GENERATED" }), 0);
@@ -467,6 +474,19 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
           const before = await scope.client.request("GET", "/dashboard/activity?range=7d");
           assert.equal(before.status, 200);
           assert.equal(before.body.activity.length, 7);
+          const todayLabel = before.body.activity.at(-1).date;
+          const todayLogins = before.body.activity.at(-1).logins;
+          await AuditLog.create({
+            userId: scope.employees[0]._id,
+            userName: scope.employees[0].name,
+            role: "EMPLOYEE",
+            eventType: "LOGIN_SUCCESS",
+            description: "Department-scoped trend fixture",
+          });
+          const withTeamActivity = await scope.client.request("GET", "/dashboard/activity?range=7d");
+          assert.equal(withTeamActivity.status, 200);
+          const todayRow = withTeamActivity.body.activity.find((row) => row.date === todayLabel);
+          assert.equal(todayRow.logins, todayLogins + 1, "manager trends include active employees from their department");
           await AuditLog.create([
             { userId: scope.foreignManager._id, eventType: "LOGIN_SUCCESS", description: "Foreign department test login" },
             { userId: scope.foreignEmployees[0]._id, eventType: "UNAUTHORIZED_RESOURCE_ACCESS", status: "CRITICAL", description: "Foreign department test denial" },
@@ -844,6 +864,22 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
           assert.equal(row.user, undefined);
           assert.equal(JSON.stringify(row).includes(target.email), false, "the audit API must not include the transferred user's email");
         }
+
+        const retainedLabelEvent = await AuditLog.findOne({
+          eventType: "USER_UPDATED",
+          "metadata.targetUserId": String(transferredManager._id),
+        }).sort({ createdAt: -1, _id: -1 }).lean();
+        const renamedDepartment = `${newDepartment.name} renamed for history check`;
+        await Department.updateOne({ _id: newDepartment._id }, { $set: { name: renamedDepartment } });
+        try {
+          const historicalEvent = await AuditLog.findById(retainedLabelEvent._id).lean();
+          assert.equal(historicalEvent.metadata.newDepartmentName, newDepartment.name);
+          assert.ok(historicalEvent.description.includes(
+            `Department changed from ${formerDepartment.name} to ${newDepartment.name}.`,
+          ));
+        } finally {
+          await Department.updateOne({ _id: newDepartment._id }, { $set: { name: newDepartment.name } });
+        }
       });
 
       await t.test("transfer from a named department to unassigned is clear and private in the audit API", async () => {
@@ -1136,6 +1172,14 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       const target = await makeUser("EMPLOYEE", {
         name: "Rejected department transfer target",
       });
+      const before = {
+        name: target.name,
+        email: target.email,
+        role: target.role,
+        status: target.status,
+        departmentId: String(target.departmentId),
+        mfaEnabled: target.mfaEnabled,
+      };
       const missingDepartmentId = new mongoose.Types.ObjectId().toString();
       assert.equal(await Department.exists({ _id: missingDepartmentId }), null);
 
@@ -1147,7 +1191,19 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       assert.equal(update.body.error, "Choose a valid department.");
 
       const savedTarget = await User.findById(target._id).lean();
-      assert.equal(String(savedTarget.departmentId), String(department._id));
+      assert.deepEqual({
+        name: savedTarget.name,
+        email: savedTarget.email,
+        role: savedTarget.role,
+        status: savedTarget.status,
+        departmentId: String(savedTarget.departmentId),
+        mfaEnabled: savedTarget.mfaEnabled,
+      }, before);
+
+      const malformed = await adminClient.request("PATCH", `/users/${target._id}`, { departmentId: "bad-id" });
+      assert.equal(malformed.status, 400);
+      assert.equal(malformed.body.code, "INVALID_DEPARTMENT_ID");
+      assert.equal(String((await User.findById(target._id)).departmentId), before.departmentId);
 
       const auditUrl = (page) =>
         `/audit-logs?userId=${admin._id}&from=${encodeURIComponent(auditSince.toISOString())}&limit=100&page=${page}`;
@@ -1201,6 +1257,39 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
         assert.equal(Object.hasOwn(event.metadata, field), false, `${field} must not appear in status-only audit metadata`);
       }
       assert.doesNotMatch(event.description, /department changed|transfer/i);
+
+      const reactivated = await adminClient.request("PATCH", `/users/${target._id}`, { status: "ACTIVE" });
+      assert.equal(reactivated.status, 200);
+      assert.equal(reactivated.body.user.status, "ACTIVE");
+      assert.equal(String(reactivated.body.user.departmentId), originalDepartmentId);
+      const reactivationEvent = await AuditLog.findOne({
+        eventType: "ACCOUNT_STATUS_CHANGED",
+        "metadata.targetUserId": String(target._id),
+        "metadata.status": "ACTIVE",
+      }).sort({ createdAt: -1, _id: -1 }).lean();
+      assert.ok(reactivationEvent);
+      for (const field of ["oldDepartmentId", "oldDepartmentName", "newDepartmentId", "newDepartmentName"]) {
+        assert.equal(Object.hasOwn(reactivationEvent.metadata, field), false);
+      }
+      assert.doesNotMatch(reactivationEvent.description, /department changed|transfer/i);
+    });
+
+    await t.test("combined role and status changes are clear in the audit history", async () => {
+      const target = await makeUser("EMPLOYEE", { name: "Combined audit target" });
+      const response = await adminClient.request("PATCH", `/users/${target._id}`, {
+        role: "MANAGER",
+        status: "DISABLED",
+      });
+      assert.equal(response.status, 200);
+      const event = await AuditLog.findOne({
+        eventType: "ROLE_MODIFIED",
+        "metadata.targetUserId": String(target._id),
+      }).sort({ createdAt: -1, _id: -1 }).lean();
+      assert.ok(event);
+      assert.equal(event.metadata.role, "MANAGER");
+      assert.equal(event.metadata.status, "DISABLED");
+      assert.match(event.description, /role from EMPLOYEE to MANAGER/);
+      assert.match(event.description, /status to DISABLED/);
     });
 
     await t.test("9. Role change immediately invalidates existing authorization", async () => {
@@ -1215,6 +1304,28 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       assert.equal(response.body.user, undefined);
       assert.equal((await pendingClient.request("GET", "/auth/portal/admin")).status, 403);
       assert.ok(await AuditLog.exists({ userId: employee._id, eventType: "UNAUTHORIZED_PORTAL_ACCESS" }));
+    });
+
+    await t.test("a demoted administrator loses every existing session and cannot sign in through the old portal", async () => {
+      const target = await makeUser("ADMIN", { name: "Demoted administrator fixture" });
+      const firstClient = await knownClient(target, "198.51.100.60");
+      const secondClient = await knownClient(target, "198.51.100.61");
+      assert.equal((await signIn(firstClient, target)).status, 200);
+      assert.equal((await signIn(secondClient, target)).status, 200);
+      const oldSessions = await Session.find({ userId: target._id, status: "ACTIVE" }).select("_id").lean();
+      assert.equal(oldSessions.length, 2);
+
+      const demotion = await adminClient.request("PATCH", `/users/${target._id}`, { role: "EMPLOYEE" });
+      assert.equal(demotion.status, 200);
+      assert.equal(demotion.body.user.role, "EMPLOYEE");
+      assert.equal(await Session.countDocuments({ _id: { $in: oldSessions.map(({ _id }) => _id) }, status: "ACTIVE" }), 0);
+      assert.equal((await firstClient.request("GET", "/roles")).status, 401);
+      assert.equal((await secondClient.request("GET", "/roles")).status, 401);
+
+      const oldPortalClient = await knownClient(target, "198.51.100.62");
+      const oldPortalAttempt = await signIn(oldPortalClient, target, "admin");
+      assert.equal(oldPortalAttempt.status, 403);
+      assert.equal(oldPortalAttempt.body.code, "PORTAL_ROLE_MISMATCH");
     });
 
     await t.test("disabling and transferring an employee revokes access and records the administrator action", async () => {
@@ -1262,6 +1373,17 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       const followUpAccess = await pendingClient.request("GET", "/profile");
       assert.equal(followUpAccess.status, 401);
       assert.equal(followUpAccess.body.code, "SESSION_REVOKED");
+      const blockedSignInClient = await knownClient(employee, "198.51.100.26");
+      await blockedSignInClient.request("GET", "/auth/csrf");
+      const blockedSignIn = await blockedSignInClient.request("POST", "/auth/login", {
+        portal: "employee",
+        email: employee.email,
+        password,
+      });
+      assert.equal(blockedSignIn.status, 403);
+      assert.equal(blockedSignIn.body.code, "ACCOUNT_INACTIVE");
+      assert.equal(await PreAuth.exists({ userId: employee._id }), null);
+      assert.ok(await AuditLog.exists({ userId: employee._id, eventType: "LOGIN_BLOCKED" }));
 
       const event = await AuditLog.findOne({
         eventType: "ACCOUNT_STATUS_CHANGED",

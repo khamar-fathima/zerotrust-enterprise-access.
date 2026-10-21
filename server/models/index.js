@@ -70,6 +70,8 @@ const deviceSchema = new Schema({
   approvedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
 }, timestamps);
 deviceSchema.index({ userId: 1, status: 1 });
+deviceSchema.index({ createdAt: -1, _id: -1 });
+deviceSchema.index({ status: 1, createdAt: -1, _id: -1 });
 
 const sessionSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
@@ -84,6 +86,8 @@ const sessionSchema = new Schema({
   revokeReason: { type: String, default: "" },
 }, timestamps);
 sessionSchema.index({ userId: 1, status: 1 });
+sessionSchema.index({ lastActivity: -1, _id: -1 });
+sessionSchema.index({ status: 1, lastActivity: -1, _id: -1 });
 
 const auditLogSchema = new Schema({
   eventType: { type: String, required: true, index: true },
@@ -97,6 +101,7 @@ const auditLogSchema = new Schema({
 }, { ...timestamps, versionKey: false });
 auditLogSchema.index({ createdAt: -1, eventType: 1 });
 auditLogSchema.index({ createdAt: -1, _id: -1 });
+auditLogSchema.index({ userId: 1, createdAt: -1 });
 
 const resourceSchema = new Schema({
   name: { type: String, required: true, trim: true, maxlength: 120 },

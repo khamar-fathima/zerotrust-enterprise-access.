@@ -1,10 +1,14 @@
 import { Router } from "express";
 import { rateLimit } from "express-rate-limit";
+import { z } from "zod";
 import { AuditLog, Device, Resource, Session, User } from "../models/index.js";
 import { requireAuth } from "../middleware/auth.js";
 import { writeAudit } from "../lib/audit.js";
 import { AiInvalidResponseError, AiProviderUnavailableError, generateRiskAnalysis } from "../services/aiRiskAnalysis.js";
-import { getRiskHistory, getRiskSnapshot } from "../services/riskAnalysis.js";
+import {
+  classifyRiskEvent, getRiskHistory, getRiskSnapshot, RISK_EVIDENCE_EVENT_TYPES,
+} from "../services/riskAnalysis.js";
+import { literalSearch } from "../lib/pagination.js";
 
 const router = Router();
 const DAY = 24 * 60 * 60 * 1000;
@@ -35,12 +39,18 @@ function dayKey(date) {
   return new Date(date).toISOString().slice(0, 10);
 }
 
-function labelsForLastWeek() {
-  return Array.from({ length: 7 }, (_, index) => {
+function labelsForRange(days) {
+  return Array.from({ length: days }, (_, index) => {
     const date = new Date();
     date.setUTCHours(0, 0, 0, 0);
-    date.setUTCDate(date.getUTCDate() - (6 - index));
-    return { date, key: dayKey(date), label: date.toLocaleDateString("en", { weekday: "short", timeZone: "UTC" }) };
+    date.setUTCDate(date.getUTCDate() - (days - 1 - index));
+    return {
+      date,
+      key: dayKey(date),
+      label: days === 7
+        ? date.toLocaleDateString("en", { weekday: "short", timeZone: "UTC" })
+        : date.toLocaleDateString("en", { month: "short", day: "numeric", timeZone: "UTC" }),
+    };
   });
 }
 
@@ -59,6 +69,45 @@ router.get("/dashboard/risk-analysis/history", requireAuth, requireBootstrapAdmi
     }
     const history = await getRiskHistory({ days, accountId });
     res.json({ days, history });
+  } catch (error) { next(error); }
+});
+
+router.get("/dashboard/risk-analysis/accounts", requireAuth, requireBootstrapAdministrator, async (req, res, next) => {
+  try {
+    const input = z.object({ q: z.string().trim().max(80).optional() }).parse(req.query);
+    const filter = input.q ? {
+      $or: [{ name: literalSearch(input.q) }, { email: literalSearch(input.q) }],
+    } : {};
+    const accounts = await User.find(filter).select("_id name role status")
+      .sort({ name: 1, _id: 1 }).limit(50).lean();
+    res.json({ accounts: accounts.map(({ _id, name, role, status }) => ({
+      id: String(_id), name, role, status,
+    })) });
+  } catch (error) { next(error); }
+});
+
+router.get("/dashboard/risk-analysis/evidence", requireAuth, requireBootstrapAdministrator, async (req, res, next) => {
+  try {
+    const input = z.object({
+      accountId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+      days: z.enum(["7", "30", "90"]).optional(),
+    }).parse(req.query);
+    const now = new Date();
+    const since = new Date(now.getTime() - Number(input.days || "7") * DAY);
+    const events = await AuditLog.find({
+      ...(input.accountId ? { userId: input.accountId } : {}),
+      createdAt: { $gte: since, $lt: now },
+      $or: [{ eventType: { $in: RISK_EVIDENCE_EVENT_TYPES } }, { status: "CRITICAL" }],
+    }).sort({ createdAt: -1, _id: -1 })
+      .select("userName eventType status description createdAt")
+      .limit(100).lean();
+    res.json({
+      events: events.filter((event) => classifyRiskEvent(event.eventType, event.status))
+        .slice(0, 30)
+        .map(({ userName, eventType, status, description, createdAt }) => ({
+          userName, eventType, status, description, createdAt,
+        })),
+    });
   } catch (error) { next(error); }
 });
 
@@ -171,18 +220,36 @@ router.get("/dashboard/activity", requireAuth, async (req, res, next) => {
   try {
     const range = ["7d", "30d", "90d"].includes(req.query.range) ? req.query.range : "7d";
     const days = Number(range.slice(0, -1));
-    const since = new Date(Date.now() - days * DAY);
-    const labels = labelsForLastWeek();
-    const userFilter = req.user.role === "ADMIN" ? {} : { userId: req.user._id };
-    const events = await AuditLog.find({ ...userFilter, createdAt: { $gte: since } })
-      .sort({ createdAt: 1 }).limit(3000).select("eventType status createdAt").lean();
+    const labels = labelsForRange(days);
+    const nextDay = new Date(labels.at(-1).date.getTime() + DAY);
+    let userFilter = {};
+    if (req.user.role === "EMPLOYEE") {
+      userFilter = { userId: req.user._id };
+    } else if (req.user.role === "MANAGER") {
+      const departmentId = req.user.departmentId?._id || req.user.departmentId;
+      const team = departmentId
+        ? await User.find({ departmentId, role: "EMPLOYEE", status: "ACTIVE" }).select("_id").lean()
+        : [];
+      userFilter = { userId: { $in: team.map(({ _id }) => _id) } };
+    }
+    const groupedEvents = await AuditLog.aggregate([
+      { $match: { ...userFilter, createdAt: { $gte: labels[0].date, $lt: nextDay } } },
+      { $group: {
+        _id: {
+          day: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "UTC" } },
+          eventType: "$eventType",
+          status: "$status",
+        },
+        count: { $sum: 1 },
+      } },
+    ]);
     const byDay = new Map(labels.map((item) => [item.key, { date: item.label, logins: 0, alerts: 0, denied: 0 }]));
-    for (const event of events) {
-      const row = byDay.get(dayKey(event.createdAt));
+    for (const event of groupedEvents) {
+      const row = byDay.get(event._id.day);
       if (!row) continue;
-      if (event.eventType === "LOGIN_SUCCESS") row.logins += 1;
-      if (event.status === "CRITICAL") row.alerts += 1;
-      if (event.eventType.includes("DENIED") || event.eventType.includes("MISMATCH") || event.eventType === "UNAUTHORIZED_ACCESS" || event.eventType === "UNAUTHORIZED_RESOURCE_ACCESS") row.denied += 1;
+      if (event._id.eventType === "LOGIN_SUCCESS") row.logins += event.count;
+      if (event._id.status === "CRITICAL") row.alerts += event.count;
+      if (event._id.eventType.includes("DENIED") || event._id.eventType.includes("MISMATCH") || event._id.eventType === "UNAUTHORIZED_ACCESS" || event._id.eventType === "UNAUTHORIZED_RESOURCE_ACCESS") row.denied += event.count;
     }
     res.json({ range, activity: [...byDay.values()] });
   } catch (error) { next(error); }

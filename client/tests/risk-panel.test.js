@@ -69,6 +69,10 @@ test("risk panel uses explicit AI requests, preserves scores on failure, and hid
         } else body = { snapshot };
       } else if (pathname === "/api/dashboard/risk-analysis/history") {
         body = riskHistory;
+      } else if (pathname === "/api/dashboard/risk-analysis/accounts") {
+        body = { accounts: [{ id: "backup-account", name: "Backup identity", role: "MANAGER", status: "ACTIVE" }] };
+      } else if (pathname === "/api/dashboard/risk-analysis/evidence") {
+        body = { events: [{ eventType: "PORTAL_ROLE_MISMATCH", status: "CRITICAL", userName: "Risk test identity", description: "A recorded access denial.", createdAt: "2026-10-19T12:00:00Z" }] };
       }
       await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
     });
@@ -89,6 +93,13 @@ test("risk panel uses explicit AI requests, preserves scores on failure, and hid
     assert.match(await page.locator(".risk-history__detail").innerText(), /43\/100/);
     await page.getByLabel("History scope").selectOption("test-account");
     await page.locator(".risk-history__detail").getByText("10/100").waitFor();
+    await page.getByLabel("Search risk history accounts").fill("Backup");
+    await page.getByRole("option", { name: /Backup identity/ }).waitFor();
+    await page.getByLabel("History scope").selectOption("backup-account");
+    await page.locator(".risk-history__detail").getByText("10/100").waitFor();
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Export CSV" }).click();
+    assert.match((await downloadPromise).suggestedFilename(), /risk-history-account-30d\.csv/);
     assert.equal(analysisRequests, 0, "Loading the dashboard must not send signals to AI.");
     await page.locator(".risk-account summary").click();
     assert.match(await page.locator(".risk-account-reasons").innerText(), /2 active verified session/);
@@ -97,6 +108,8 @@ test("risk panel uses explicit AI requests, preserves scores on failure, and hid
     t.diagnostic("Explicit AI request rendered its report.");
     assert.equal(analysisRequests, 1);
     assert.match(await page.locator(".risk-finding__top").innerText(), /Risk test identity/);
+    await page.getByRole("button", { name: "View audit evidence" }).click();
+    await page.getByText("A recorded access denial.", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Refresh risk scores" }).click();
     await page.waitForFunction(() => !document.body.textContent.includes("A test-only advisory summary."));
     assert.equal(analysisRequests, 1, "Refreshing scores must not regenerate AI advice.");

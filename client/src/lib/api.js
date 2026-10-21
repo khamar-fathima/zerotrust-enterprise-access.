@@ -45,6 +45,8 @@ export const api = {
     activity: (range = "7d") => request(http.get("/dashboard/activity", { params: { range } })),
     riskAnalysis: () => request(http.get("/dashboard/risk-analysis")),
     riskAnalysisHistory: (params) => request(http.get("/dashboard/risk-analysis/history", { params })),
+    riskAnalysisAccounts: (q) => request(http.get("/dashboard/risk-analysis/accounts", { params: q ? { q } : {} })),
+    riskAnalysisEvidence: (params) => request(http.get("/dashboard/risk-analysis/evidence", { params })),
     generateRiskAnalysis: () => request(http.post("/dashboard/risk-analysis")),
   },
   users: {
@@ -56,11 +58,11 @@ export const api = {
   roles: () => request(http.get("/roles")),
   departments: () => request(http.get("/departments")),
   devices: {
-    list: (params) => request(http.get("/devices", { params })),
+    list: (params, options = {}) => request(http.get("/devices", { ...options, params })),
     review: (id, status) => request(http.patch(`/devices/${id}`, { status })),
   },
   sessions: {
-    list: (params) => request(http.get("/sessions", { params })),
+    list: (params, options = {}) => request(http.get("/sessions", { ...options, params })),
     revoke: (id) => request(http.delete(`/sessions/${id}`)),
     revokeAll: (userId) => request(http.post("/sessions/revoke-all", { userId })),
   },
