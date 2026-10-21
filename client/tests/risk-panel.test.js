@@ -94,7 +94,7 @@ test("risk panel uses explicit AI requests, preserves scores on failure, and hid
     await page.getByLabel("History scope").selectOption("test-account");
     await page.locator(".risk-history__detail").getByText("10/100").waitFor();
     await page.getByLabel("Search risk history accounts").fill("Backup");
-    await page.getByRole("option", { name: /Backup identity/ }).waitFor();
+    await page.locator('option[value="backup-account"]').waitFor({ state: "attached" });
     await page.getByLabel("History scope").selectOption("backup-account");
     await page.locator(".risk-history__detail").getByText("10/100").waitFor();
     const downloadPromise = page.waitForEvent("download");

@@ -493,7 +493,7 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
           ]);
           const after = await scope.client.request("GET", "/dashboard/activity?range=7d");
           assert.equal(after.status, 200);
-          assert.deepEqual(after.body, before.body);
+          assert.deepEqual(after.body, withTeamActivity.body);
         }
       });
 
@@ -1111,6 +1111,52 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       await User.deleteMany({ _id: { $in: fixtures.map((row) => row._id) } });
     });
 
+    await t.test("administrators can page through all matching device and session records", async () => {
+      const deviceFixtures = await Device.insertMany(Array.from({ length: 305 }, (_, index) => ({
+        userId: employee._id,
+        name: `Device Pagination ${String(index).padStart(3, "0")}`,
+        browser: "Pagination test browser",
+        operatingSystem: "Test OS",
+        credentialHash: hashToken(randomToken(40)),
+        status: "APPROVED",
+      })));
+      const sessionDevice = await Device.create({
+        userId: employee._id,
+        name: "Session Pagination Device",
+        credentialHash: hashToken(randomToken(40)),
+        status: "APPROVED",
+      });
+      const sessionFixtures = await Session.insertMany(Array.from({ length: 305 }, () => ({
+        userId: employee._id,
+        deviceId: sessionDevice._id,
+        roleAtIssue: "EMPLOYEE",
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      })));
+      try {
+        const deviceIds = [];
+        const sessionIds = [];
+        for (let page = 1; page <= 4; page++) {
+          const devices = await adminClient.request("GET", `/devices?q=Device%20Pagination&limit=100&page=${page}`);
+          assert.equal(devices.status, 200);
+          assert.equal(devices.body.total, 305);
+          assert.equal(devices.body.totalPages, 4);
+          deviceIds.push(...devices.body.devices.map(({ id }) => String(id)));
+          const sessions = await adminClient.request("GET", `/sessions?q=Session%20Pagination%20Device&limit=100&page=${page}`);
+          assert.equal(sessions.status, 200);
+          assert.equal(sessions.body.total, 305);
+          assert.equal(sessions.body.totalPages, 4);
+          sessionIds.push(...sessions.body.sessions.map(({ id }) => String(id)));
+        }
+        assert.equal(new Set(deviceIds).size, 305);
+        assert.equal(new Set(sessionIds).size, 305);
+      } finally {
+        await Promise.all([
+          Session.deleteMany({ _id: { $in: sessionFixtures.map(({ _id }) => _id) } }),
+          Device.deleteMany({ _id: { $in: [...deviceFixtures.map(({ _id }) => _id), sessionDevice._id] } }),
+        ]);
+      }
+    });
+
     await t.test("audit pages search all matching events and remain administrator-only", async () => {
       const createdAt = new Date("2020-06-15T12:00:00.000Z");
       await AuditLog.insertMany(Array.from({ length: 265 }, (_, index) => ({
@@ -1153,13 +1199,17 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
     });
 
     await t.test("invalid list parameters are rejected rather than widening filters", async () => {
-      for (const route of ["/users", "/audit-logs"]) {
+      for (const route of ["/users", "/audit-logs", "/devices", "/sessions"]) {
         for (const query of ["page=0", "page=-1", "page=1.5", "page=1e9", "limit=101", "limit=NaN", "page=1&page=2", "q=a&q=b", "status=UNKNOWN", `q=${"x".repeat(81)}`]) {
           const response = await adminClient.request("GET", `${route}?${query}`);
           assert.equal(response.status, 400, `${route}?${query}`);
         }
       }
-      for (const route of ["/users?departmentId=invalid", "/audit-logs?userId=invalid", "/audit-logs?from=invalid", "/audit-logs?from=2021-01-01&to=2020-01-01"]) {
+      for (const route of [
+        "/users?departmentId=invalid", "/audit-logs?userId=invalid",
+        "/devices?userId=invalid", "/sessions?userId=invalid",
+        "/audit-logs?from=invalid", "/audit-logs?from=2021-01-01&to=2020-01-01",
+      ]) {
         assert.equal((await adminClient.request("GET", route)).status, 400);
       }
       const defaults = await adminClient.request("GET", "/users");
