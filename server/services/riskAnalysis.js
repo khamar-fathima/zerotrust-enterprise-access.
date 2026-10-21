@@ -1,6 +1,7 @@
-import { AuditLog, Device, Session, User } from "../models/index.js";
+import { AuditLog, Device, RiskHistory, Session, User } from "../models/index.js";
 
 export const RISK_WINDOW_DAYS = 7;
+export const RISK_HISTORY_RETENTION_DAYS = 180;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const failedEventTypes = new Set(["LOGIN_FAILED", "MFA_FAILED"]);
@@ -105,6 +106,79 @@ function trend(current = {}, previous = {}) {
   }));
 }
 
+function utcDay(date) {
+  const day = new Date(date);
+  day.setUTCHours(0, 0, 0, 0);
+  return day;
+}
+
+function factorTotals(factors = []) {
+  return factors.map(({ key, points }) => ({ key, points }));
+}
+
+export function buildRiskHistoryRecord(snapshot, accountScores, now = new Date()) {
+  const day = utcDay(now);
+  return {
+    day,
+    expiresAt: new Date(day.getTime() + RISK_HISTORY_RETENTION_DAYS * DAY_MS),
+    organization: {
+      score: snapshot.organization.score,
+      factorTotals: factorTotals(snapshot.organization.factors),
+    },
+    accounts: accountScores.map((account) => ({
+      userId: account.id,
+      score: account.score,
+      factorTotals: factorTotals(account.factors),
+    })),
+  };
+}
+
+async function saveDailyRiskRecord(record) {
+  try {
+    await RiskHistory.findOneAndUpdate(
+      { day: record.day },
+      { $set: record },
+      { upsert: true, new: true, setDefaultsOnInsert: true, timestamps: false },
+    );
+  } catch (error) {
+    if (error?.code !== 11000) throw error;
+    await RiskHistory.findOneAndUpdate(
+      { day: record.day },
+      { $set: record },
+      { new: true, timestamps: false },
+    );
+  }
+}
+
+export async function getRiskHistory({ days = 30, accountId = null, now = new Date() } = {}) {
+  const today = utcDay(now);
+  const start = new Date(today.getTime() - (days - 1) * DAY_MS);
+  const rows = await RiskHistory.find({ day: { $gte: start, $lte: today } })
+    .sort({ day: 1 })
+    .select("day organization accounts")
+    .lean();
+  return rows.map((row) => {
+    const account = accountId
+      ? row.accounts.find((item) => String(item.userId) === String(accountId))
+      : null;
+    return {
+      day: row.day.toISOString(),
+      organization: {
+        score: row.organization?.score ?? null,
+        factorTotals: row.organization?.factorTotals || [],
+      },
+      account: account ? { score: account.score, factorTotals: account.factorTotals || [] } : null,
+    };
+  });
+}
+
+export async function captureDailyRiskSnapshot(now = new Date()) {
+  const day = utcDay(now);
+  if (await RiskHistory.exists({ day })) return false;
+  await getRiskSnapshot(now);
+  return true;
+}
+
 export async function getRiskSnapshot(now = new Date()) {
   const currentStart = new Date(now.getTime() - RISK_WINDOW_DAYS * DAY_MS);
   const previousStart = new Date(currentStart.getTime() - RISK_WINDOW_DAYS * DAY_MS);
@@ -154,7 +228,7 @@ export async function getRiskSnapshot(now = new Date()) {
     activity: globalActivity,
     stalePendingDevices: staleDeviceRows.reduce((sum, row) => sum + row.count, 0),
   });
-  const accounts = activeUsers.map((user) => ({
+  const allAccounts = activeUsers.map((user) => ({
     id: String(user._id),
     name: user.name,
     role: user.role,
@@ -163,7 +237,7 @@ export async function getRiskSnapshot(now = new Date()) {
     ...calculateAccountRisk(user, countFor(accountCounts, user._id), staleByUser.get(String(user._id)) || 0),
   })).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 
-  return {
+  const snapshot = {
     generatedAt: now.toISOString(),
     windowDays: RISK_WINDOW_DAYS,
     windowStart: currentStart.toISOString(),
@@ -172,11 +246,14 @@ export async function getRiskSnapshot(now = new Date()) {
       ...organization,
       activeAccountCount: activeUsers.length,
       activeSessionCount: activeSessionRows.reduce((sum, row) => sum + row.count, 0),
-      highRiskAccountCount: accounts.filter((account) => account.score >= 50).length,
+      highRiskAccountCount: allAccounts.filter((account) => account.score >= 50).length,
       trends: trend(globalActivity, previousActivity),
     },
-    accounts: accounts.slice(0, 10),
+    accounts: allAccounts.slice(0, 10),
   };
+  const historyRecord = buildRiskHistoryRecord(snapshot, allAccounts, now);
+  await saveDailyRiskRecord(historyRecord);
+  return snapshot;
 }
 
 export function buildRedactedRiskInput(snapshot) {

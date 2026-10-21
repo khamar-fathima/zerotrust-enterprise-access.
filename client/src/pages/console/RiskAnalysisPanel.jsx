@@ -97,6 +97,87 @@ function AnalysisContent({ analysis, accounts }) {
   </div>;
 }
 
+function HistoryChart({ history, accountId, selectedDay, onSelectDay }) {
+  const scoreFor = (row) => accountId === "organization" ? row.organization?.score : row.account?.score;
+  const points = history.rows.map((row, index) => {
+    const score = scoreFor(row);
+    return score == null ? null : {
+      index,
+      x: history.rows.length <= 1 ? 300 : 24 + index * (552 / (history.rows.length - 1)),
+      y: 108 - (Number(score) * 0.88),
+      score: Number(score),
+    };
+  });
+  const lineSegments = [];
+  let segment = [];
+  for (const point of points) {
+    if (point) segment.push(point);
+    else if (segment.length) {
+      lineSegments.push(segment);
+      segment = [];
+    }
+  }
+  if (segment.length) lineSegments.push(segment);
+  const selected = history.rows.find((row) => row.day.slice(0, 10) === selectedDay);
+  const selectedRisk = selected && (accountId === "organization" ? selected.organization : selected.account);
+  const scoreLabel = accountId === "organization" ? "Organization score" : "Selected account score";
+  return <section className="risk-history" aria-label="Daily risk score history">
+    <div className="risk-section-heading risk-history__heading">
+      <div><span className="risk-mini-label">DAILY DETERMINISTIC SCORES</span><h3>Risk score history</h3>
+        <p>Snapshots retain scores and factor totals for 180 days. AI advice is never saved here.</p>
+      </div>
+      <div className="risk-history__controls">
+        <label><span className="sr-only">History scope</span>
+          <select value={accountId} onChange={(event) => onSelectDay("scope", event.target.value)}>
+            <option value="organization">Organization</option>
+            {history.accounts.map((account) => <option key={account.id} value={account.id}>{account.name || "Unnamed identity"} · {account.role}</option>)}
+          </select>
+        </label>
+        <label><span className="sr-only">History period</span>
+          <select value={history.days} onChange={(event) => onSelectDay("days", Number(event.target.value))}>
+            <option value={30}>Last 30 days</option><option value={90}>Last 90 days</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    {history.loading ? <div className="risk-history__empty">Loading saved daily scores…</div>
+      : history.error ? <div className="risk-history__empty risk-history__empty--error">{history.error}</div>
+        : !history.rows.length ? <div className="risk-history__empty">No daily history yet. A snapshot is recorded when this dashboard is opened.</div>
+          : <>
+            <div className="risk-history__chart" role="img" aria-label={`${scoreLabel} trend over ${history.days} days`}>
+              <div className="risk-history__axis"><span>100</span><span>50</span><span>0</span></div>
+              <svg viewBox="0 0 600 120" preserveAspectRatio="none" aria-hidden="true">
+                {[20, 64, 108].map((y) => <line key={y} x1="0" x2="600" y1={y} y2={y} className="risk-history__gridline" />)}
+                {lineSegments.filter((line) => line.length > 1).map((line, index) => <polyline key={index} points={line.map(({ x, y }) => `${x},${y}`).join(" ")} className="risk-history__line" />)}
+                {points.map((point) => point && <circle key={history.rows[point.index]?.day} cx={point.x} cy={point.y} r="3" className="risk-history__dot" />)}
+              </svg>
+              <span className="risk-history__chart-end risk-history__chart-end--start">{readableDate(history.rows[0]?.day)}</span>
+              <span className="risk-history__chart-end risk-history__chart-end--end">{readableDate(history.rows.at(-1)?.day)}</span>
+            </div>
+            <div className="risk-history__days" aria-label="Select a historical snapshot">
+              {history.rows.map((row) => {
+                const score = scoreFor(row);
+                const dayKey = row.day.slice(0, 10);
+                return <button type="button" key={dayKey} className={selectedDay === dayKey ? "is-selected" : ""}
+                  onClick={() => onSelectDay("day", dayKey)} disabled={score == null}
+                  aria-pressed={selectedDay === dayKey} title={`${readableDate(row.day)}: ${score == null ? "No account score" : `${score} of 100`}`}>
+                  <span>{readableDate(row.day)}</span><strong>{score ?? "—"}</strong>
+                </button>;
+              })}
+            </div>
+            <div className="risk-history__detail">
+              <div className="risk-history__detail-head"><strong>{selected ? readableDate(selected.day) : "Select a saved day"}</strong><span>{scoreLabel}</span>
+                <b>{selectedRisk?.score == null ? "—" : `${selectedRisk.score}/100`}</b>
+              </div>
+              {selectedRisk && <div className="risk-history__factors">
+                {(selectedRisk.factorTotals || []).map((factor) => <span key={factor.key}>{factor.key}<b>+{factor.points}</b></span>)}
+              </div>}
+              {!selectedRisk && <p>This account had no saved score on the selected day.</p>}
+            </div>
+          </>}
+  </section>;
+}
+
 export default function RiskAnalysisPanel() {
   const [snapshot, setSnapshot] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -105,6 +186,12 @@ export default function RiskAnalysisPanel() {
   const [analysisPending, setAnalysisPending] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
   const [analysisReady, setAnalysisReady] = useState(false);
+  const [historyRows, setHistoryRows] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const [historyDays, setHistoryDays] = useState(30);
+  const [historyAccountId, setHistoryAccountId] = useState("organization");
+  const [selectedHistoryDay, setSelectedHistoryDay] = useState("");
 
   const loadSnapshot = useCallback(async () => {
     setLoading(true);
@@ -123,6 +210,29 @@ export default function RiskAnalysisPanel() {
   }, []);
 
   useEffect(() => { loadSnapshot(); }, [loadSnapshot]);
+
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const response = await api.dashboard.riskAnalysisHistory({
+        days: historyDays,
+        ...(historyAccountId !== "organization" ? { accountId: historyAccountId } : {}),
+      });
+      const rows = Array.isArray(response?.history) ? response.history : [];
+      setHistoryRows(rows);
+      setSelectedHistoryDay((current) => rows.some((row) => row.day.slice(0, 10) === current)
+        ? current : rows.at(-1)?.day.slice(0, 10) || "");
+    } catch (error) {
+      setHistoryError(errorMessage(error, "Risk history could not be loaded."));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [historyAccountId, historyDays]);
+
+  useEffect(() => {
+    if (snapshot) loadHistory();
+  }, [loadHistory, snapshot]);
 
   const generateAdvice = async () => {
     setAnalysisPending(true);
@@ -150,6 +260,12 @@ export default function RiskAnalysisPanel() {
   const trends = Array.isArray(organization?.trends) ? organization.trends : [];
   const activeCount = Number(organization?.activeAccountCount) || 0;
   const cannotAnalyze = loading || analysisPending || !snapshot || Boolean(scoreError) || organization?.score == null;
+  const historyAccounts = accounts.map(({ id, name, role }) => ({ id, name, role }));
+  const changeHistorySelection = (type, value) => {
+    if (type === "scope") setHistoryAccountId(value);
+    else if (type === "days") setHistoryDays(value);
+    else setSelectedHistoryDay(value);
+  };
 
   return <div className="risk-analysis-panel">
     <Panel
@@ -189,6 +305,12 @@ export default function RiskAnalysisPanel() {
               {trends.length ? <div className="risk-trends">{trends.map((trend, index) => <TrendValue key={trend.key || index} trend={trend} />)}</div> : <p className="risk-muted">No trend data was returned for this window.</p>}
             </section>
           </div>
+          <HistoryChart
+            history={{ rows: historyRows, loading: historyLoading, error: historyError, days: historyDays, accounts: historyAccounts }}
+            accountId={historyAccountId}
+            selectedDay={selectedHistoryDay}
+            onSelectDay={changeHistorySelection}
+          />
           <section className="risk-accounts">
             <div className="risk-section-heading risk-accounts-heading"><div><span className="risk-mini-label">ACCOUNT REVIEW</span><h3>Highest-scoring identities</h3><p>Scores are deterministic; open a row to inspect the contributing reasons.</p></div><span className="risk-count"><Users size={13} />{accounts.length} shown</span></div>
             {activeCount === 0 ? <EmptyState title="No active identities to assess" detail="The current organization snapshot has no active accounts." icon={Fingerprint} />

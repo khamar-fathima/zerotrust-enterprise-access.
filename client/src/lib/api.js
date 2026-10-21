@@ -44,6 +44,7 @@ export const api = {
     summary: () => request(http.get("/dashboard/summary")),
     activity: (range = "7d") => request(http.get("/dashboard/activity", { params: { range } })),
     riskAnalysis: () => request(http.get("/dashboard/risk-analysis")),
+    riskAnalysisHistory: (params) => request(http.get("/dashboard/risk-analysis/history", { params })),
     generateRiskAnalysis: () => request(http.post("/dashboard/risk-analysis")),
   },
   users: {

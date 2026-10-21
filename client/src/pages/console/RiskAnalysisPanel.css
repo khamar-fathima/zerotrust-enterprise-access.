@@ -93,6 +93,40 @@
 .risk-trend__change--down { color: #4f8064; }
 .risk-trend__prior { margin-top: 2px; }
 
+.risk-history { padding: 18px 21px 19px; border-top: 1px solid #e1e8e0; }
+.risk-history__heading { align-items: center; margin-bottom: 10px; }
+.risk-history__heading p { margin: 5px 0 0; color: #7b8980; font-size: 10px; line-height: 1.4; }
+.risk-history__controls { display: flex; gap: 7px; }
+.risk-history__controls select {
+  max-width: 205px; min-height: 32px; padding: 5px 26px 5px 8px; border: 1px solid #d8e2d8;
+  border-radius: 4px; background: #f8f9f5; color: #455a4d; font: 10px Manrope, sans-serif;
+}
+.risk-history__chart { height: 142px; position: relative; margin: 7px 0 0 27px; padding-bottom: 17px; }
+.risk-history__chart svg { display: block; width: 100%; height: 116px; overflow: visible; }
+.risk-history__axis { position: absolute; top: 0; bottom: 21px; left: -26px; display: flex; flex-direction: column; justify-content: space-between; color: #97a299; font: 8px 'DM Mono', monospace; }
+.risk-history__gridline { stroke: #e4eae3; stroke-width: 1; }
+.risk-history__line { fill: none; stroke: #527b61; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.risk-history__dot { fill: #f5f7f1; stroke: #527b61; stroke-width: 2; }
+.risk-history__chart-end { position: absolute; bottom: 0; color: #89968d; font: 8px 'DM Mono', monospace; }
+.risk-history__chart-end--start { left: 0; }
+.risk-history__chart-end--end { right: 0; }
+.risk-history__days { display: flex; gap: 5px; max-width: 100%; overflow-x: auto; padding: 3px 0 8px; border-bottom: 1px solid #e5ebe4; }
+.risk-history__days button { display: grid; flex: 0 0 auto; justify-items: center; gap: 3px; min-width: 56px; padding: 6px 7px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #79877e; cursor: pointer; }
+.risk-history__days button span { font: 8px 'DM Mono', monospace; white-space: nowrap; }
+.risk-history__days button strong { color: #445a4b; font: 700 12px Manrope, sans-serif; }
+.risk-history__days button:hover, .risk-history__days button.is-selected { border-color: #cfddcf; background: #edf3eb; }
+.risk-history__days button:disabled { cursor: default; opacity: .55; }
+.risk-history__detail { margin-top: 10px; padding: 11px 12px; border: 1px solid #e0e8df; border-radius: 5px; background: #f8f9f5; }
+.risk-history__detail-head { display: flex; align-items: center; gap: 10px; color: #718077; font-size: 10px; }
+.risk-history__detail-head strong { color: #3e5546; }
+.risk-history__detail-head b { margin-left: auto; color: #315c4c; font: 700 15px Manrope, sans-serif; white-space: nowrap; }
+.risk-history__factors { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.risk-history__factors span { display: inline-flex; align-items: center; gap: 7px; padding: 5px 7px; border-radius: 3px; background: #eaf0e8; color: #64766a; font: 9px 'DM Mono', monospace; }
+.risk-history__factors b { color: #a85e46; font-weight: 500; }
+.risk-history__detail p, .risk-history__empty { margin: 8px 0 0; color: #7a8980; font-size: 10px; line-height: 1.5; }
+.risk-history__empty { padding: 18px 10px; border: 1px dashed #d8e2d8; text-align: center; }
+.risk-history__empty--error { color: #9b4e3d; }
+
 .risk-accounts { border-top: 1px solid #e1e8e0; }
 .risk-accounts-heading { align-items: center; padding: 18px 21px 13px; margin: 0; }
 .risk-accounts-heading p { margin: 5px 0 0; color: #7b8980; font-size: 10px; line-height: 1.4; }
@@ -165,6 +199,11 @@
   .risk-overview__metrics span { font-size: 8px; }
   .risk-overview__metrics strong { font-size: 18px; }
   .risk-details-grid { grid-template-columns: 1fr; gap: 22px; padding-inline: 17px; }
+  .risk-history { padding-inline: 16px; }
+  .risk-history__heading { align-items: flex-start; flex-direction: column; }
+  .risk-history__controls { width: 100%; }
+  .risk-history__controls label { flex: 1; min-width: 0; }
+  .risk-history__controls select { width: 100%; max-width: 100%; }
   .risk-snapshot-meta { align-items: flex-start; flex-direction: column; gap: 5px; }
   .risk-account summary { grid-template-columns: 25px minmax(75px, 1fr) 48px auto 15px; gap: 7px; padding-inline: 13px; }
   .risk-account-reasons { padding-left: 45px; padding-right: 13px; }
@@ -183,4 +222,5 @@
   .risk-account-score { font-size: 15px; }
   .risk-count { font-size: 8px; padding: 5px 6px; }
   .risk-analysis-prompt { align-items: flex-start; flex-direction: column; gap: 7px; }
+  .risk-history__detail-head { align-items: flex-start; flex-wrap: wrap; }
 }

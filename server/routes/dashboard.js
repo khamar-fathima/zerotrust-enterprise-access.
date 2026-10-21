@@ -4,7 +4,7 @@ import { AuditLog, Device, Resource, Session, User } from "../models/index.js";
 import { requireAuth } from "../middleware/auth.js";
 import { writeAudit } from "../lib/audit.js";
 import { AiInvalidResponseError, AiProviderUnavailableError, generateRiskAnalysis } from "../services/aiRiskAnalysis.js";
-import { getRiskSnapshot } from "../services/riskAnalysis.js";
+import { getRiskHistory, getRiskSnapshot } from "../services/riskAnalysis.js";
 
 const router = Router();
 const DAY = 24 * 60 * 60 * 1000;
@@ -47,6 +47,18 @@ function labelsForLastWeek() {
 router.get("/dashboard/risk-analysis", requireAuth, requireBootstrapAdministrator, async (_req, res, next) => {
   try {
     res.json({ snapshot: await getRiskSnapshot() });
+  } catch (error) { next(error); }
+});
+
+router.get("/dashboard/risk-analysis/history", requireAuth, requireBootstrapAdministrator, async (req, res, next) => {
+  try {
+    const days = req.query.days === "90" ? 90 : 30;
+    const accountId = req.query.accountId == null ? null : String(req.query.accountId);
+    if (accountId && !/^[a-f\d]{24}$/i.test(accountId)) {
+      return res.status(400).json({ error: "Choose a valid account.", code: "INVALID_ACCOUNT_ID" });
+    }
+    const history = await getRiskHistory({ days, accountId });
+    res.json({ days, history });
   } catch (error) { next(error); }
 });
 

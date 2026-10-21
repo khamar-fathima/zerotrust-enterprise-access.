@@ -44,6 +44,13 @@ test("risk panel uses explicit AI requests, preserves scores on failure, and hid
       findings: [{ scope: "account", accountRef: "acct-1", priority: "LOW", title: "Review the denial", evidence: "One recorded denied event.", recommendation: "Review the audit record before taking action." }],
       recommendations: ["Review the access denial."], trendSummary: "Denied events rose from zero to one.",
     };
+    const riskHistory = {
+      days: 30,
+      history: [
+        { day: "2026-10-18T00:00:00.000Z", organization: { score: 35, factorTotals: [{ key: "deniedAccess", points: 5 }] }, account: { score: 6, factorTotals: [{ key: "failedAuth", points: 2 }] } },
+        { day: "2026-10-19T00:00:00.000Z", organization: { score: 43, factorTotals: [{ key: "deniedAccess", points: 8 }] }, account: { score: 10, factorTotals: [{ key: "failedAuth", points: 5 }] } },
+      ],
+    };
     await page.route("**/api/**", async (route) => {
       const pathname = new URL(route.request().url()).pathname;
       let status = 200;
@@ -60,6 +67,8 @@ test("risk panel uses explicit AI requests, preserves scores on failure, and hid
           status = failAnalysis ? 503 : 200;
           body = failAnalysis ? { code: "AI_NOT_CONFIGURED", error: "AI is not enabled." } : { snapshot, analysis };
         } else body = { snapshot };
+      } else if (pathname === "/api/dashboard/risk-analysis/history") {
+        body = riskHistory;
       }
       await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
     });
@@ -75,6 +84,11 @@ test("risk panel uses explicit AI requests, preserves scores on failure, and hid
     await page.locator(".risk-score__inner strong").waitFor();
     assert.equal(await page.locator(".risk-score__inner strong").innerText(), "43");
     t.diagnostic("Risk snapshot rendered.");
+    await page.getByRole("heading", { name: "Risk score history" }).waitFor();
+    await page.locator(".risk-history__days button").last().click();
+    assert.match(await page.locator(".risk-history__detail").innerText(), /43\/100/);
+    await page.getByLabel("History scope").selectOption("test-account");
+    await page.locator(".risk-history__detail").getByText("10/100").waitFor();
     assert.equal(analysisRequests, 0, "Loading the dashboard must not send signals to AI.");
     await page.locator(".risk-account summary").click();
     assert.match(await page.locator(".risk-account-reasons").innerText(), /2 active verified session/);

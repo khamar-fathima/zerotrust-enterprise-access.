@@ -5,6 +5,8 @@ import {
   calculateAccountRisk,
   calculateOrganizationRisk,
   classifyRiskEvent,
+  buildRiskHistoryRecord,
+  RISK_HISTORY_RETENTION_DAYS,
   riskLevel,
 } from "../services/riskAnalysis.js";
 import { generateRiskAnalysis, RiskAnalysisSchema } from "../services/aiRiskAnalysis.js";
@@ -68,6 +70,36 @@ test("organization score uses the approved weighted factors and handles no activ
     stalePendingDevices: 100,
   });
   assert.equal(maximum.score, 100);
+});
+
+test("daily risk history stores only numeric scores and factor totals for bounded retention", () => {
+  const now = new Date("2026-10-21T15:30:00.000Z");
+  const snapshot = {
+    organization: {
+      score: 21,
+      factors: [{ key: "mfaCoverage", points: 10, label: "MFA coverage gap", detail: "Private narrative." }],
+    },
+  };
+  const record = buildRiskHistoryRecord(snapshot, [{
+    id: "68f7a011d2a0c80000000001",
+    name: "Private Name",
+    email: "private@example.test",
+    score: 12,
+    factors: [{ key: "failedAuth", points: 5, label: "Failed sign-ins", detail: "Private account detail." }],
+    analysis: { summary: "Do not persist AI advice." },
+  }], now);
+  assert.equal(record.day.toISOString(), "2026-10-21T00:00:00.000Z");
+  assert.equal(record.expiresAt.getTime() - record.day.getTime(), RISK_HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  assert.deepEqual(record.organization, { score: 21, factorTotals: [{ key: "mfaCoverage", points: 10 }] });
+  assert.deepEqual(record.accounts, [{
+    userId: "68f7a011d2a0c80000000001",
+    score: 12,
+    factorTotals: [{ key: "failedAuth", points: 5 }],
+  }]);
+  const serialized = JSON.stringify(record);
+  for (const privateValue of ["Private Name", "private@example.test", "Private narrative", "Private account detail", "Do not persist AI advice"]) {
+    assert.equal(serialized.includes(privateValue), false);
+  }
 });
 
 function snapshotFixture() {

@@ -22,6 +22,20 @@ const userSchema = new Schema({
 userSchema.index({ departmentId: 1, role: 1, status: 1 });
 userSchema.index({ createdAt: -1, _id: -1 });
 userSchema.index({ departmentId: 1, role: 1, status: 1, name: 1, _id: 1 });
+userSchema.pre(["deleteOne", "deleteMany", "findOneAndDelete"], async function () {
+  const deletedUsers = await this.model.find(this.getFilter()).select("_id").lean();
+  this._riskHistoryUserIds = deletedUsers.map((user) => user._id);
+});
+userSchema.post(["deleteOne", "deleteMany", "findOneAndDelete"], async function () {
+  const deletedIds = this._riskHistoryUserIds || [];
+  if (!deletedIds.length || !models.RiskHistory) return;
+  await models.RiskHistory.updateMany({}, { $pull: { accounts: { userId: { $in: deletedIds } } } });
+});
+userSchema.post("deleteOne", { document: true, query: false }, async function () {
+  if (models.RiskHistory) {
+    await models.RiskHistory.updateMany({}, { $pull: { accounts: { userId: this._id } } });
+  }
+});
 
 const roleSchema = new Schema({
   key: { type: String, required: true, unique: true },
@@ -106,6 +120,23 @@ const preAuthSchema = new Schema({
   deviceId: { type: Schema.Types.ObjectId, ref: "Device", default: null },
 }, timestamps);
 
+const riskHistoryAccountSchema = new Schema({
+  userId: { type: Schema.Types.ObjectId, required: true },
+  score: { type: Number, min: 0, max: 100, required: true },
+  factorTotals: [{ key: { type: String, required: true }, points: { type: Number, required: true } }],
+}, { _id: false });
+const riskHistorySchema = new Schema({
+  day: { type: Date, required: true },
+  expiresAt: { type: Date, required: true },
+  organization: {
+    score: { type: Number, min: 0, max: 100, default: null },
+    factorTotals: [{ key: String, points: Number }],
+  },
+  accounts: { type: [riskHistoryAccountSchema], default: [] },
+}, { versionKey: false });
+riskHistorySchema.index({ day: 1 }, { unique: true });
+riskHistorySchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
 export const User = models.User || model("User", userSchema);
 export const Role = models.Role || model("Role", roleSchema);
 export const Permission = models.Permission || model("Permission", permissionSchema);
@@ -115,3 +146,4 @@ export const Session = models.Session || model("Session", sessionSchema);
 export const AuditLog = models.AuditLog || model("AuditLog", auditLogSchema);
 export const Resource = models.Resource || model("Resource", resourceSchema);
 export const PreAuth = models.PreAuth || model("PreAuth", preAuthSchema);
+export const RiskHistory = models.RiskHistory || model("RiskHistory", riskHistorySchema);

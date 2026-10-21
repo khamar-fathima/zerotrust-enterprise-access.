@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-import { AuditLog, Department, Device, PreAuth, Resource, Session, User } from "../models/index.js";
+import { AuditLog, Department, Device, PreAuth, Resource, RiskHistory, Session, User } from "../models/index.js";
 import { encryptSecret, generateTotp, hashToken, newTotpSecret, randomToken } from "../lib/security.js";
 
 const uri = process.env.MONGODB_URI;
@@ -122,18 +122,28 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
       assert.equal(typeof risk.body.snapshot.organization.score, "number");
       assert.ok(risk.body.snapshot.accounts.some((account) => String(account.id) === String(employee._id)));
       assert.equal(JSON.stringify(risk.body).includes(employee.email), false);
+      const history = await adminClient.request("GET", `/dashboard/risk-analysis/history?days=30&accountId=${employee._id}`);
+      assert.equal(history.status, 200);
+      assert.ok(history.body.history.some((row) => typeof row.account?.score === "number"));
+      assert.equal(JSON.stringify(history.body).includes(employee.email), false);
 
       const ordinaryAdmin = await makeUser("ADMIN");
       const ordinaryAdminClient = await knownClient(ordinaryAdmin, "198.51.100.42");
       try {
         assert.equal((await signIn(ordinaryAdminClient, ordinaryAdmin)).body.authenticated, true);
         assert.equal((await ordinaryAdminClient.request("GET", "/auth/me")).body.user.isBootstrapAdmin, false);
+        await adminClient.request("GET", "/dashboard/risk-analysis");
+        const ordinaryAdminHistory = await adminClient.request("GET", `/dashboard/risk-analysis/history?accountId=${ordinaryAdmin._id}`);
+        assert.ok(ordinaryAdminHistory.body.history.some((row) => typeof row.account?.score === "number"));
         for (const unauthorizedClient of [ordinaryAdminClient, managerClient, employeeClient]) {
           for (const method of ["GET", "POST"]) {
             const denied = await unauthorizedClient.request(method, "/dashboard/risk-analysis");
             assert.equal(denied.status, 403);
             assert.equal(denied.body.code, "FORBIDDEN");
           }
+          const deniedHistory = await unauthorizedClient.request("GET", "/dashboard/risk-analysis/history");
+          assert.equal(deniedHistory.status, 403);
+          assert.equal(deniedHistory.body.code, "FORBIDDEN");
         }
         assert.ok(await AuditLog.exists({ eventType: "RISK_ANALYSIS_ACCESS_DENIED", userId: ordinaryAdmin._id }));
         assert.equal(await AuditLog.countDocuments({ eventType: "RISK_ANALYSIS_GENERATED" }), 0);
@@ -144,6 +154,7 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
           User.deleteOne({ _id: ordinaryAdmin._id }),
           AuditLog.deleteMany({ $or: [{ userId: ordinaryAdmin._id }, { eventType: "RISK_ANALYSIS_ACCESS_DENIED" }] }),
         ]);
+        assert.equal(await RiskHistory.exists({ "accounts.userId": ordinaryAdmin._id }), null);
       }
     });
 
