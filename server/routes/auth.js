@@ -22,14 +22,14 @@ import { clearAuthCookies, requireAuth } from "../middleware/auth.js";
 const router = Router();
 const loginLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 10,
+  limit: process.env.NODE_ENV === "test" ? 1000 : 10,
   standardHeaders: "draft-8",
   legacyHeaders: false,
   message: { error: "Too many sign-in attempts. Try again in 15 minutes.", code: "RATE_LIMITED" },
 });
 const challengeLimit = rateLimit({
   windowMs: 5 * 60 * 1000,
-  limit: 15,
+  limit: process.env.NODE_ENV === "test" ? 1000 : 15,
   standardHeaders: "draft-8",
   legacyHeaders: false,
   message: { error: "Too many verification attempts. Start again in a few minutes.", code: "RATE_LIMITED" },

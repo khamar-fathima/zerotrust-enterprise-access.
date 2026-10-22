@@ -7,7 +7,7 @@
     "dev": "concurrently -k -n api,web -c green,magenta \"node --watch server/index.js\" \"vite --config vite.config.js --host 0.0.0.0 --port 5000\"",
     "build": "vite --config vite.config.js build && npm run check:bundle",
     "start": "NODE_ENV=production node server/index.js",
-    "test": "node --test server/tests/*.test.js client/tests/*.test.js",
+    "test": "node --test --test-concurrency=1 server/tests/*.test.js client/tests/*.test.js",
     "check:bundle": "node scripts/check-bundle.mjs",
     "test:browser": "node --test server/tests/browser.test.js"
   },

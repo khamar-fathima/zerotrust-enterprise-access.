@@ -289,7 +289,7 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
         assert.equal(ownIdentity.body.user.id, String(unassignedManager._id));
         assertSafeUser(ownIdentity.body.user);
         for (const target of [...unassignedEmployees, manager, operationsManager]) {
-          await expectDenied(unassignedClient, `/users/${target._id}`,
+          await expectDenied({ manager: unassignedManager, client: unassignedClient }, `/users/${target._id}`,
             "UNAUTHORIZED_USER_ACCESS", "targetUserId", target, target.email);
         }
 
@@ -323,7 +323,7 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
         assert.equal(sharedContent.status, 200);
         assert.equal(sharedContent.body.resource.content, sharedResource.content);
         for (const target of [engineeringResource, operationsResource, operationsManagerResource]) {
-          await expectDenied(unassignedClient, `/resources/${target._id}/content`,
+          await expectDenied({ manager: unassignedManager, client: unassignedClient }, `/resources/${target._id}/content`,
             "UNAUTHORIZED_RESOURCE_ACCESS", "resourceId", target, target.content);
         }
       });
