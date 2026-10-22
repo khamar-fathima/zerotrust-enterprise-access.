@@ -2,3 +2,4 @@
 - [GitHub authorization](github-authorization.md) — integration status may disagree with CLI access; verify actual authentication before claiming a push.
 - [Atlas test database limits](browser-verification.md) — this Atlas environment limits database names to 38 bytes; random fixture names must have a safe maximum length.
 - [Query schema defaults](query-schema-defaults.md) — Zod 4 output defaults bypass transformations; query defaults must still pass through parsing.
+- [Test suite isolation](test-suite-isolation.md) — run Vite-backed tests serially and keep fixture auth throttles test-only.
