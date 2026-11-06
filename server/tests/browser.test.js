@@ -118,7 +118,7 @@ test("browser sign-in, MFA enrollment, and pending-device approval", {
         role: "EMPLOYEE",
         status: "ACTIVE",
         departmentId: department._id,
-        passwordHash: "browser-test-fixture-only",
+        passwordHash: hashToken(randomToken()),
       })),
       ...Array.from({ length: 5 }, (_, index) => ({
         name: `Pagination foreign identity ${String(index).padStart(2, "0")}`,
@@ -126,7 +126,7 @@ test("browser sign-in, MFA enrollment, and pending-device approval", {
         role: "EMPLOYEE",
         status: "ACTIVE",
         departmentId: otherDepartment._id,
-        passwordHash: "browser-test-fixture-only",
+        passwordHash: hashToken(randomToken()),
       })),
     ]);
 

@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "Dq8ZmVYeAFGp1L0d6Dc69"
+uri = "file://generated-artifacts/zerotrust-enterprise-access-clean.zip"
+type = "unspecified"
+title = "Clean ZeroTrust project ZIP"
+description = "Full source archive with the flagged test-vector literal and hardcoded fixture hashes removed; ZIP integrity and credential-pattern scan passed."
+logical_id = "7bc5f81a-93a8-4362-ba5c-46398e425244"
+content_hash = "sha256:d2d2295cb7995d696c9d64e32accc37781c9eb6be5d0243d726bff08b5ea2903"
+size = 162795
+mtime_ms = 1793968266644
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:1b09fd5d-fbe9-45ae-b922-2d06b8fce22f/7bc5f81a-93a8-4362-ba5c-46398e425244/e6f596b0-6dcd-42fc-9f6c-4f8279725aec"
+storage_version_token = "1793968299600363"
+content_type = "application/octet-stream"

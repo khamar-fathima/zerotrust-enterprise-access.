@@ -1054,7 +1054,7 @@ test("MongoDB-backed security acceptance scenarios", { skip: !uri, timeout: 120_
         role: index === 0 ? "MANAGER" : "EMPLOYEE",
         status: index === 1 ? "DISABLED" : "ACTIVE",
         departmentId: index < 5 ? otherDepartment._id : department._id,
-        passwordHash: "unused-fixture-hash",
+        passwordHash: hashToken(randomToken()),
       })));
       const adminPage = await adminClient.request("GET", "/users?q=Paging&limit=100&page=3");
       assert.equal(adminPage.status, 200);
